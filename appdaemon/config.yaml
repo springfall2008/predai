@@ -1,9 +1,9 @@
 ---
-name: appdaemon-predbat
+name: appdaemon-ubunto
 version: 1.1.0
-slug: appdaemon-predbat
-description: Predbat pre-install in AppDaemon
-url: https://github.com/springfall2008/appdaemon-predbat
+slug: appdaemon-ubunto
+description: Predbat pre-install in AppDaemon & Ubunto
+url: https://github.com/springfall2008/appdaemon-ubunto
 codenotary: codenotary@frenck.dev
 webui: http://[HOST]:[PORT:5051]
 arch:
