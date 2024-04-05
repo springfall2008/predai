@@ -12,8 +12,13 @@ RUN apt-get install -y python3.11-venv
 # Set shell
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Copy Python requirements file
+WORKDIR /root
+ENV VIRTUAL_ENV=/root/venv/day_ahead
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
 COPY requirements.txt /tmp/
+RUN pip3 install -r /tmp/requirements.txt
 
 # We need to copy in the patches need during build
 COPY rootfs/patches /patches
@@ -47,15 +52,6 @@ RUN \
 
 # Copy root filesystem
 COPY rootfs /
-
-#WORKDIR /root
-#ENV VIRTUAL_ENV=/root/venv/day_ahead
-#RUN python3 -m venv $VIRTUAL_ENV
-#ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-
-#COPY requirements.txt /tmp/
-#RUN pip3 install -r /tmp/requirements.txt
-#COPY rootfs /
 
 ARG BUILD_ARCH
 ARG BUILD_DATE
