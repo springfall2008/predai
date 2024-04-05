@@ -18,7 +18,8 @@ WORKDIR /root
 #ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 COPY requirements.txt /tmp/
-RUN pip3 install -r /tmp/requirements.txt
+#RUN pip3 install -r /tmp/requirements.txt
+RUN python3 -m pip install -r /tmp/requirements.txt
 
 # Copy root filesystem
 #COPY rootfs /config
