@@ -6,7 +6,7 @@ FROM $BUILD_FROM
 RUN apt-get update
 RUN apt-get upgrade -y
 RUN apt-get dist-upgrade -y
-RUN apt-get python3
+RUN apt-get install python3
 
 WORKDIR /root
 ENV VIRTUAL_ENV=/root/venv/day_ahead
