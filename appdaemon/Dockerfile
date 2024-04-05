@@ -49,5 +49,4 @@ LABEL \
     org.opencontainers.image.revision=${BUILD_REF} \
     org.opencontainers.image.version=${BUILD_VERSION}
 
-RUN python3 test.py
-
+CMD ["python3", "/test.py"]
