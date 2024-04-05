@@ -1,10 +1,10 @@
 ---
-name: appdaemon-ubunto
+name: predai
 version: 1.1.2
-slug: appdaemon-ubunto
-description: Predbat pre-install in AppDaemon & Ubunto
-url: https://github.com/springfall2008/appdaemon-ubunto
-codenotary: codenotary@frenck.dev
+slug: predai
+description: PredAI
+url: https://github.com/springfall2008/predai
+codenotary: tdlj@tdlj.net
 webui: http://[HOST]:[PORT:5052]
 arch:
   - aarch64
@@ -16,7 +16,7 @@ uart: true
 ports:
   5052/tcp: 5052
 ports_description:
-  5052/tcp: AppDaemon
+  5052/tcp: PredAI
 map:
   - addon_config:rw
   - homeassistant_config:rw
