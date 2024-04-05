@@ -13,18 +13,19 @@ RUN apt-get install -y python3.11-venv
 # Set shell
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+COPY rootfs/predai.py /config/predai.py
 WORKDIR /root
-#ENV VIRTUAL_ENV=/root/venv/day_ahead
-#RUN python3 -m venv $VIRTUAL_ENV
-#ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+ENV VIRTUAL_ENV=/root/venv/day_ahead
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 COPY requirements.txt /tmp/
-#RUN pip3 install -r /tmp/requirements.txt
-RUN python3 -m pip install -r /tmp/requirements.txt
+RUN pip3 install -r /tmp/requirements.txt
+#RUN python3 -m pip install -r /tmp/requirements.txt
 
 # Copy root filesystem
 #COPY rootfs /config
-COPY rootfs/predai.py /config/predai.py
 
 ARG BUILD_ARCH
 ARG BUILD_DATE
