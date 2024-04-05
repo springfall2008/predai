@@ -16,6 +16,7 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 COPY requirements.txt /tmp/
 RUN pip3 install -r /tmp/requirements.txt
+COPY rootfs /
 
 ARG BUILD_ARCH
 ARG BUILD_DATE
