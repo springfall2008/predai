@@ -20,18 +20,6 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 COPY requirements.txt /tmp/
 RUN pip3 install -r /tmp/requirements.txt
 
-# We need to copy in the patches need during build
-COPY rootfs/patches /patches
-
-RUN \
-    cd /usr/lib/python3.11/site-packages/ \
-    && patch -p1 < /patches/force_recompile.patch \
-    && find /usr \
-        \( -type d -a -name test -o -name tests -o -name '__pycache__' \) \
-        -o \( -type f -a -name '*.pyc' -o -name '*.pyo' \) \
-        -exec rm -rf '{}' + \
-    && echo "Step6"
-
 # Copy root filesystem
 COPY rootfs /
 
@@ -60,3 +48,6 @@ LABEL \
     org.opencontainers.image.created=${BUILD_DATE} \
     org.opencontainers.image.revision=${BUILD_REF} \
     org.opencontainers.image.version=${BUILD_VERSION}
+
+RUN python3 test.py
+
