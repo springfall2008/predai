@@ -13,7 +13,7 @@ RUN apt-get install -y python3.11-venv
 # Set shell
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-COPY rootfs/predai.py /config/predai.py
+COPY rootfs /
 WORKDIR /root
 
 ENV VIRTUAL_ENV=/root/venv/day_ahead
@@ -22,10 +22,6 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 COPY requirements.txt /tmp/
 RUN pip3 install -r /tmp/requirements.txt
-#RUN python3 -m pip install -r /tmp/requirements.txt
-
-# Copy root filesystem
-#COPY rootfs /config
 
 ARG BUILD_ARCH
 ARG BUILD_DATE
@@ -53,4 +49,4 @@ LABEL \
     org.opencontainers.image.revision=${BUILD_REF} \
     org.opencontainers.image.version=${BUILD_VERSION}
 
-CMD ["python3", "/config/predai.py"]
+CMD ["python3", "/startup.py"]
