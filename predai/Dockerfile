@@ -10,7 +10,8 @@ RUN apt-get install -y python3
 RUN apt-get install -y python3.11-venv
 
 # Set shell
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+COPY rootfs /config
+#SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 WORKDIR /root
 ENV VIRTUAL_ENV=/root/venv/day_ahead
@@ -21,7 +22,7 @@ COPY requirements.txt /tmp/
 RUN pip3 install -r /tmp/requirements.txt
 
 # Copy root filesystem
-COPY rootfs /config
+#COPY rootfs /config
 
 ARG BUILD_ARCH
 ARG BUILD_DATE
