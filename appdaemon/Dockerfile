@@ -6,6 +6,12 @@ FROM $BUILD_FROM
 RUN apt-get update
 RUN apt-get upgrade -y
 RUN apt-get dist-upgrade -y
+RUN apt-get python3
+
+WORKDIR /root
+ENV VIRTUAL_ENV=/root/venv/day_ahead
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 COPY requirements.txt /tmp/
 RUN pip3 install -r /tmp/requirements.txt
