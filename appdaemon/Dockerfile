@@ -9,14 +9,53 @@ RUN apt-get dist-upgrade -y
 RUN apt-get install -y python3
 RUN apt-get install -y python3.11-venv
 
-WORKDIR /root
-ENV VIRTUAL_ENV=/root/venv/day_ahead
-RUN python3 -m venv $VIRTUAL_ENV
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+# Set shell
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# Copy Python requirements file
 COPY requirements.txt /tmp/
-RUN pip3 install -r /tmp/requirements.txt
+
+# We need to copy in the patches need during build
+COPY rootfs/patches /patches
+
+# Setup base
+# hadolint ignore=DL3003,DL3042
+RUN \
+    apk add --no-cache --virtual .build-dependencies \
+        build-base=0.5-r3 \
+        python3-dev=3.11.8-r0 \
+    && echo "Step1"
+RUN \
+    apk add --no-cache \
+        py3-pip=23.3.1-r0 \
+        py3-wheel=0.42.0-r0 \
+        python3=3.11.8-r0 \
+    && echo "Step2"
+RUN \
+    pip install -r /tmp/requirements.txt \
+    && echo "Step3"
+RUN \
+    cd /usr/lib/python3.11/site-packages/ \
+    && patch -p1 < /patches/force_recompile.patch \
+    && find /usr \
+        \( -type d -a -name test -o -name tests -o -name '__pycache__' \) \
+        -o \( -type f -a -name '*.pyc' -o -name '*.pyo' \) \
+        -exec rm -rf '{}' + \
+    && echo "Step6"
+RUN \
+    apk del --no-cache --purge .build-dependencies
+
+# Copy root filesystem
 COPY rootfs /
+
+#WORKDIR /root
+#ENV VIRTUAL_ENV=/root/venv/day_ahead
+#RUN python3 -m venv $VIRTUAL_ENV
+#ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+#COPY requirements.txt /tmp/
+#RUN pip3 install -r /tmp/requirements.txt
+#COPY rootfs /
 
 ARG BUILD_ARCH
 ARG BUILD_DATE
