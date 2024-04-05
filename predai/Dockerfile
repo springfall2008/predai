@@ -21,7 +21,7 @@ COPY requirements.txt /tmp/
 RUN pip3 install -r /tmp/requirements.txt
 
 # Copy root filesystem
-COPY rootfs /
+COPY rootfs /config
 
 ARG BUILD_ARCH
 ARG BUILD_DATE
@@ -49,4 +49,4 @@ LABEL \
     org.opencontainers.image.revision=${BUILD_REF} \
     org.opencontainers.image.version=${BUILD_VERSION}
 
-CMD ["python3", "/predai.py"]
+CMD ["python3", "/config/predai.py"]
