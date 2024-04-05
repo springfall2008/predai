@@ -1,2 +1,4 @@
 appdaemon==4.4.2
-neuralprophet
+pandas
+torch
+neuralprophet==0.8.0
