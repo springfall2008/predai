@@ -1,10 +1,10 @@
 ---
 build_from:
-  aarch64: ghcr.io/hassio-addons/debian-base/aarch64:latest
-  amd64: ghcr.io/hassio-addons/debiab-base/amd64:latest
-  armhf: ghcr.io/hassio-addons/debian-base/armhf:latest
-  armv7: ghcr.io/hassio-addons/debian-base/armv7:latest
-  i386: ghcr.io/hassio-addons/debian-base/i386:latest
+  aarch64: ghcr.io/hassio-addons/debian-base/aarch64:stable
+  amd64: ghcr.io/hassio-addons/debiab-base/amd64:stable
+  armhf: ghcr.io/hassio-addons/debian-base/armhf:stable
+  armv7: ghcr.io/hassio-addons/debian-base/armv7:stable
+  i386: ghcr.io/hassio-addons/debian-base/i386:stable
 codenotary:
-  base_image: codenotary@frenck.dev
-  signer: codenotary@frenck.dev
+  base_image: tdlj@tdlj.net
+  signer: tdlj@tdlj.net
