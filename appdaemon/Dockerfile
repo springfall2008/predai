@@ -8,6 +8,8 @@ RUN apt-get upgrade -y
 RUN apt-get dist-upgrade -y
 RUN apt-get install -y python3
 RUN apt-get install -y python3.11-venv
+RUN apt-get install -y build-base
+RUN apt-get install -y py3-wheel
 
 # Set shell
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -22,13 +24,6 @@ RUN pip3 install -r /tmp/requirements.txt
 
 # We need to copy in the patches need during build
 COPY rootfs/patches /patches
-
-# Setup base
-# hadolint ignore=DL3003,DL3042
-RUN pip3 install build-base
-RUN pip3 install py3-pip
-RUN pip3 install py3-wheel
-RUN pip3 install python3==3.11.8-r0
 
 RUN \
     cd /usr/lib/python3.11/site-packages/ \
