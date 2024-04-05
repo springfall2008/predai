@@ -35,5 +35,3 @@ schema:
     - str
   init_commands:
     - str
-  initial_download:
-    - str
