@@ -8,8 +8,6 @@ RUN apt-get upgrade -y
 RUN apt-get dist-upgrade -y
 RUN apt-get install -y python3
 RUN apt-get install -y python3.11-venv
-RUN apt-get install -y build-base
-RUN apt-get install -y py3-wheel
 
 # Set shell
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
