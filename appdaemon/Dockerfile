@@ -25,10 +25,10 @@ COPY rootfs/patches /patches
 
 # Setup base
 # hadolint ignore=DL3003,DL3042
-RUN pip3 install build-base=0.5-r3
-RUN pip3 install py3-pip=23.3.1-r0
-RUN pip3 install py3-wheel=0.42.0-r0
-RUN pip3 install python3=3.11.8-r0
+RUN pip3 install build-base==0.5-r3
+RUN pip3 install py3-pip==23.3.1-r0
+RUN pip3 install py3-wheel==0.42.0-r0
+RUN pip3 install python3==3.11.8-r0
 
 RUN \
     cd /usr/lib/python3.11/site-packages/ \
