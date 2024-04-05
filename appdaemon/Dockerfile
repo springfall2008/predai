@@ -3,14 +3,9 @@ ARG BUILD_FROM
 ARG BUILD_VERSION
 FROM $BUILD_FROM
 
-RUN apt-get install python3 -y\
-    python3-pip -y\
-    python3-venv -y
-
-WORKDIR /root
-ENV VIRTUAL_ENV=/root/venv/day_ahead
-RUN python3 -m venv $VIRTUAL_ENV
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+RUN apt-get update
+RUN apt-get upgrade -y
+RUN apt-get dist-upgrade -y
 
 COPY requirements.txt /tmp/
 RUN pip3 install -r /tmp/requirements.txt
@@ -28,7 +23,7 @@ LABEL \
     io.hass.arch="${BUILD_ARCH}" \
     io.hass.type="addon" \
     io.hass.version=${BUILD_VERSION} \
-    maintainer="alexbelgium (https://github.com/alexbelgium)" \
+    maintainer="springfall2008 (https://github.com/springfall2008)" \
     org.opencontainers.image.title="${BUILD_NAME}" \
     org.opencontainers.image.description="${BUILD_DESCRIPTION}" \
     org.opencontainers.image.vendor="Home Assistant Add-ons" \
