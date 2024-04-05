@@ -13,9 +13,9 @@ RUN apt-get install -y python3.11-venv
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 WORKDIR /root
-ENV VIRTUAL_ENV=/root/venv/day_ahead
-RUN python3 -m venv $VIRTUAL_ENV
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+#ENV VIRTUAL_ENV=/root/venv/day_ahead
+#RUN python3 -m venv $VIRTUAL_ENV
+#ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 COPY requirements.txt /tmp/
 RUN pip3 install -r /tmp/requirements.txt
