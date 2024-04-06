@@ -7,5 +7,6 @@
 
 bashio::log.info "Oh, hi! I'm the init script!"
 set
-exec python3 /config/predai.py
+exec /run.sh
+
 
