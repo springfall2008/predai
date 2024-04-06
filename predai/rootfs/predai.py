@@ -81,7 +81,7 @@ class Prophet:
     def __init__(self):
         set_log_level("ERROR")
 
-    def store_data(self, new_data, start_time, end_time, incrementing=False):
+    async def store_data(self, new_data, start_time, end_time, incrementing=False):
         """
         Store the data in the dataset for training.
         """
@@ -122,7 +122,7 @@ class Prophet:
 
         print(self.dataset.head())
     
-    def train(self):
+    async def train(self):
         """
         Train the model on the dataset.
         """
@@ -132,9 +132,10 @@ class Prophet:
         # Create a new dataframe reaching 96 into the future for our forecast, n_historic_predictions also shows historic data
         self.df_future = self.model.make_future_dataframe(self.dataset, n_historic_predictions=True, periods=96)
         self.forecast = self.model.predict(self.df_future)
+        self.forecast.fillna(0, inplace=True)
         print(self.forecast.head())
     
-    def save_prediction(self, entity, incrementing=False):
+    async def save_prediction(self, entity, interface, incrementing=False):
         """
         Save the prediction to Home Assistant.
         """
@@ -142,7 +143,7 @@ class Prophet:
         total = 0
         timeseries = {}
         for index, row in pred.iterrows():
-            time = row["ds"]
+            time = str(row["ds"])
             value = row["y"]
             total += value
             if incrementing:
@@ -151,7 +152,7 @@ class Prophet:
                 timeseries[time] = value
         data = {"state": 0, "attributes": {"unit_of_measurement": "kWh", "results" : timeseries}}
         print("Saving prediction to {}".format(entity))
-        self.interface.api_call("/api/states/{}".format(entity), data, post=True)
+        await interface.api_call("/api/states/{}".format(entity), data, post=True)
 
 async def main():
     interface = HAInterface()
@@ -159,9 +160,9 @@ async def main():
         dataset, start, end = await interface.get_history("sensor.givtcp_sa2243g277_load_energy_total_kwh")
         if dataset:
             nw = Prophet()
-            nw.store_data(dataset, start, end, incrementing=True)
-            nw.train()
-            nw.save_prediction("sensor.givtcp_sa2243g277_load_energy_total_kwh_prediction", incrementing=True)
+            await nw.store_data(dataset, start, end, incrementing=True)
+            await nw.train()
+            await nw.save_prediction("sensor.givtcp_sa2243g277_load_energy_total_kwh_prediction", interface, incrementing=True)
 
         print("Waiting")
         await asyncio.sleep(60 * 60)
