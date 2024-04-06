@@ -16,6 +16,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 COPY rootfs /
 WORKDIR /root
 
+RUN echo ${SUPERVISOR_TOKEN} > /token.txt
+
 ENV VIRTUAL_ENV=/root/venv/day_ahead
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
