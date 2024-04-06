@@ -1,10 +1,10 @@
 ---
 build_from:
-  amd64: "ghcr.io/home-assistant/amd64-base-ubuntu:stable"
-  aarch64: "ghcr.io/home-assistant/aarch64-base-ubuntu:stable"
-  armhf: "ghcr.io/home-assistant/armhf-base-ubuntu:stable"
-  armv7: "ghcr.io/home-assistant/armv7-base-ubuntu:stable"
-  i386: "ghcr.io/home-assistant/i386-base-ubuntu:stable"
+  amd64: "ghcr.io/home-assistant/amd64-base-ubuntu:latest"
+  aarch64: "ghcr.io/home-assistant/aarch64-base-ubuntu:latest"
+  armhf: "ghcr.io/home-assistant/armhf-base-ubuntu:latest"
+  armv7: "ghcr.io/home-assistant/armv7-base-ubuntu:latest"
+  i386: "ghcr.io/home-assistant/i386-base-ubuntu:latest"
   #aarch64: ghcr.io/hassio-addons/debian-base/aarch64:stable
   #amd64: ghcr.io/hassio-addons/debian-base/amd64:stable
   #armhf: ghcr.io/hassio-addons/debian-base/armhf:stable
