@@ -16,7 +16,8 @@ RUN apt-get install -y python3.11-venv
 WORKDIR /app_data
 COPY rootfs /
 
-RUN pip install -r /requirements.txt
+COPY requirements.txt /tmp/
+RUN pip install -r /tmp/requirements.txt
 
 # Start app
 RUN chmod a+x /run.sh
