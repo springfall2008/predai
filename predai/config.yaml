@@ -12,9 +12,9 @@ arch:
   - armv7
 init: false
 homeassistant_api: true
-uart: true
-ports:
-  5052/tcp: 5052
+hassio_api: true
+hassio_role: admin
+auth_api: true
 ports_description:
   5052/tcp: PredAI
 map:
