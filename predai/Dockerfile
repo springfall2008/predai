@@ -49,4 +49,4 @@ LABEL \
     org.opencontainers.image.revision=${BUILD_REF} \
     org.opencontainers.image.version=${BUILD_VERSION}
 
-CMD ["python3", "/startup.py", "${SUPERVISOR_TOKEN}"]
+CMD ["python3", "/startup.py"]
