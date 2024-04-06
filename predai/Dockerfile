@@ -56,4 +56,4 @@ LABEL \
     org.opencontainers.image.version=${BUILD_VERSION}
 
 # CMD ["python3", "/startup.py"]
-CMD [ "/run.sh" ]
+#CMD [ "/run.sh" ]
