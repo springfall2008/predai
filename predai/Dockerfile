@@ -16,7 +16,7 @@ RUN apt-get install -y python3.11-venv
 WORKDIR /app_data
 COPY rootfs /
 
-RUN pip install -r requirements.txt
+RUN pip install -r /requirements.txt
 
 # Start app
 RUN chmod a+x /run.sh
@@ -44,10 +44,10 @@ LABEL \
     maintainer="springfall2008 (https://github.com/springfall2008)" \
     org.opencontainers.image.title="${BUILD_NAME}" \
     org.opencontainers.image.description="${BUILD_DESCRIPTION}" \
-    org.opencontainers.image.vendor="Home Assistant Add-ons" \
-    org.opencontainers.image.authors="alexbelgium (https://github.com/alexbelgium)" \
+    org.opencontainers.image.vendor="Springfall2008" \
+    org.opencontainers.image.authors="springfall2008 (https://github.com/springfall2008)" \
     org.opencontainers.image.licenses="MIT" \
-    org.opencontainers.image.url="https://github.com/alexbelgium" \
+    org.opencontainers.image.url="https://github.com/springfall2008" \
     org.opencontainers.image.source="https://github.com/${BUILD_REPOSITORY}" \
     org.opencontainers.image.documentation="https://github.com/${BUILD_REPOSITORY}/blob/main/README.md" \
     org.opencontainers.image.created=${BUILD_DATE} \
