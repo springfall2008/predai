@@ -18,6 +18,22 @@ TIMEOUT = 240
 TIME_FORMAT_HA = "%Y-%m-%dT%H:%M:%S%z"
 TIME_FORMAT_HA_DOT = "%Y-%m-%dT%H:%M:%S.%f%z"
 
+def timestr_to_datetime(timestamp):
+    """
+    Convert a Home Assistant timestamp string to a datetime object.
+    """
+    try:
+        start_time = datetime.strptime(timestamp, TIME_FORMAT_HA)
+    except ValueError:
+        try:
+            start_time = datetime.strptime(timestamp, TIME_FORMAT_HA_DOT)
+        except ValueError:
+            start_time = None
+    if start_time:
+        start_time = start_time.replace(second=0, microsecond=0)
+    return start_time
+
+
 class HAInterface():
     def __init__(self):
         self.ha_key = os.environ.get("SUPERVISOR_TOKEN")
@@ -25,15 +41,14 @@ class HAInterface():
         now = datetime.now(timezone.utc).astimezone()
         print("HA Interface started {} key {} url {}".format(now, self.ha_key, self.ha_url))
 
-    async def get_history(self, sensor):
+    async def get_history(self, sensor, now, days=7):
         """
         Get the history for a sensor from Home Assistant.
 
         :param sensor: The sensor to get the history for.
         :return: The history for the sensor.
         """
-        now = datetime.now(timezone.utc).astimezone()
-        start = now - timedelta(days=7)
+        start = now - timedelta(days=days)
         end = now
         print("Getting history for sensor {}".format(sensor))
         res = await self.api_call("/api/history/period/{}".format(start.strftime(TIME_FORMAT_HA)), {"filter_entity_id": sensor, "end_time": end.strftime(TIME_FORMAT_HA)})
@@ -82,11 +97,11 @@ class Prophet:
     def __init__(self):
         set_log_level("ERROR")
 
-    async def store_data(self, new_data, start_time, end_time, incrementing=False):
+    async def process_dataset(self, new_data, start_time, end_time, incrementing=False):
         """
         Store the data in the dataset for training.
         """
-        self.dataset = pd.DataFrame(columns=["ds", "y"])
+        dataset = pd.DataFrame(columns=["ds", "y"])
         
         timenow = start_time
         timenow = timenow.replace(second=0, microsecond=0)
@@ -104,41 +119,33 @@ class Prophet:
                 value = last_value
 
             last_updated = new_data[data_index]["last_updated"]
-            try:
-                start_time = datetime.strptime(last_updated, TIME_FORMAT_HA)
-            except ValueError:
-                try:
-                    start_time = datetime.strptime(last_updated, TIME_FORMAT_HA_DOT)
-                except ValueError:
-                    start_time = None
+            start_time = timestr_to_datetime(last_updated)
         
-            if start_time:
-                start_time = start_time.replace(second=0, microsecond=0)
             if not start_time or start_time < timenow:
                 data_index += 1
                 continue
 
             real_value = value
             if incrementing:
-                real_value = value - last_value
-            self.dataset.loc[len(self.dataset)] = {"ds": timenow, "y": real_value}
+                real_value = max(value - last_value, 0)
+            dataset.loc[len(dataset)] = {"ds": timenow, "y": real_value}
             last_value = value
             timenow = timenow + timedelta(minutes=30)
 
-        print(self.dataset)
+        print(dataset)
+        return dataset
     
-    async def train(self):
+    async def train(self, dataset):
         """
         Train the model on the dataset.
         """
         self.model = NeuralProphet()
         # Fit the model on the dataset (this might take a bit)
-        self.metrics = self.model.fit(self.dataset, freq="30min")
+        self.metrics = self.model.fit(dataset, freq="30min")
         # Create a new dataframe reaching 96 into the future for our forecast, n_historic_predictions also shows historic data
-        self.df_future = self.model.make_future_dataframe(self.dataset, n_historic_predictions=True, periods=96)
+        self.df_future = self.model.make_future_dataframe(dataset, n_historic_predictions=True, periods=96)
         self.forecast = self.model.predict(self.df_future)
         print(self.forecast)
- #- entity: sensor.givtcp_sa2243g277_load_energy_total_kwh_prediction
  
     async def save_prediction(self, entity, interface, start, incrementing=False):
         """
@@ -167,15 +174,48 @@ class Prophet:
         print("Saving prediction to {}".format(entity))
         await interface.api_call("/api/states/{}".format(entity), data, post=True)
 
+async def subtract_set(dataset, carset, now):
+    """
+    Subtract the carset from the dataset.
+    """
+    pruned = pd.DataFrame(columns=["ds", "y"])
+    for index, row in dataset.iterrows():
+        ds = row["ds"]
+        value = row["y"]
+        try:
+            car_row = carset.loc[index]
+            car_value = car_row["y"]
+        except KeyError:
+            car_row = None
+            car_value = 0
+        #if car_value:
+        #    print("Subtracting {} from {} at time {} car_time {}".format(car_value, value, ds, car_row['ds']))
+        value = max(value - car_value, 0)
+        pruned.loc[len(pruned)] = {"ds": ds, "y": value}
+    print("Pruned set: {}".format(pruned))
+    return pruned
+
 async def main():
     interface = HAInterface()
     while True:
-        dataset, start, end = await interface.get_history("sensor.givtcp_sa2243g277_load_energy_total_kwh")
+        nw = Prophet()
+        now = datetime.now(timezone.utc).astimezone()
+        print("Get history")
+        dataset, start, end = await interface.get_history("sensor.givtcp_sa2243g277_load_energy_total_kwh", now, days=21)
+        print("Get car history")
+        carset, start, end = await interface.get_history("sensor.wallbox_portal_added_energy", now, days=21)
         if dataset:
-            nw = Prophet()
-            await nw.store_data(dataset, start, end, incrementing=True)
-            await nw.train()
-            await nw.save_prediction("sensor.givtcp_sa2243g277_load_energy_total_kwh_prediction", interface, start=end, incrementing=True)
+            print("Processing dataset")
+            dataset = await nw.process_dataset(dataset, start, end, incrementing=True)
+        if carset:
+            print("Processing carset")
+            carset = await nw.process_dataset(carset, start, end, incrementing=True)
+            print("Subtracting carset")
+            pruned = await subtract_set(dataset, carset, now)
+        else:
+            pruned = dataset
+        await nw.train(pruned)
+        await nw.save_prediction("sensor.givtcp_sa2243g277_load_energy_total_kwh_prediction", interface, start=end, incrementing=True)
 
         print("Waiting")
         await asyncio.sleep(60 * 60)
