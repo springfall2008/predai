@@ -5,8 +5,5 @@
 # Example init script, runs before any other service
 # ==============================================================================
 
-bashio::log.info "Oh, hi! I'm the init script!"
-set
+bashio::log.info "PredAI init script running"
 exec /run.sh
-
-
