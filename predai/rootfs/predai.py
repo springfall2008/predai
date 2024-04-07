@@ -22,7 +22,8 @@ class HAInterface():
     def __init__(self):
         self.ha_key = os.environ.get("SUPERVISOR_TOKEN")
         self.ha_url = "http://supervisor/core"
-        print("HA Interface started key {} url {}".format(self.ha_key, self.ha_url))
+        now = datetime.now(timezone.utc).astimezone()
+        print("HA Interface started {} key {} url {}".format(now, self.ha_key, self.ha_url))
 
     async def get_history(self, sensor):
         """
@@ -31,7 +32,7 @@ class HAInterface():
         :param sensor: The sensor to get the history for.
         :return: The history for the sensor.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc).astimezone()
         start = now - timedelta(days=7)
         end = now
         print("Getting history for sensor {}".format(sensor))
@@ -88,17 +89,19 @@ class Prophet:
         self.dataset = pd.DataFrame(columns=["ds", "y"])
         
         timenow = start_time
+        timenow = timenow.replace(second=0, microsecond=0)
         data_index = 0
         value = 0
         last_value = 0
         if incrementing:
             last_value = float(new_data[0]["state"])
+        data_len = len(new_data)
 
-        while timenow < end_time:
+        while timenow < end_time and data_index < data_len:
             try:
                 value = float(new_data[data_index]["state"])
             except ValueError:
-                pass
+                value = last_value
 
             last_updated = new_data[data_index]["last_updated"]
             try:
@@ -109,6 +112,8 @@ class Prophet:
                 except ValueError:
                     start_time = None
         
+            if start_time:
+                start_time = start_time.replace(second=0, microsecond=0)
             if not start_time or start_time < timenow:
                 data_index += 1
                 continue
@@ -120,7 +125,7 @@ class Prophet:
             last_value = value
             timenow = timenow + timedelta(minutes=30)
 
-        print(self.dataset.head())
+        print(self.dataset)
     
     async def train(self):
         """
@@ -128,29 +133,37 @@ class Prophet:
         """
         self.model = NeuralProphet()
         # Fit the model on the dataset (this might take a bit)
-        self.metrics = self.model.fit(self.dataset)
+        self.metrics = self.model.fit(self.dataset, freq="30min")
         # Create a new dataframe reaching 96 into the future for our forecast, n_historic_predictions also shows historic data
         self.df_future = self.model.make_future_dataframe(self.dataset, n_historic_predictions=True, periods=96)
         self.forecast = self.model.predict(self.df_future)
-        self.forecast.fillna(0, inplace=True)
-        print(self.forecast.head())
-    
-    async def save_prediction(self, entity, interface, incrementing=False):
+        print(self.forecast)
+ #- entity: sensor.givtcp_sa2243g277_load_energy_total_kwh_prediction
+ 
+    async def save_prediction(self, entity, interface, start, incrementing=False):
         """
         Save the prediction to Home Assistant.
         """
         pred = self.forecast
         total = 0
         timeseries = {}
+        now = datetime.now(timezone.utc).astimezone()
+
         for index, row in pred.iterrows():
-            time = str(row["ds"])
-            value = row["y"]
+            ptimestamp = row["ds"].tz_localize(timezone.utc)
+            diff = ptimestamp - now
+            timestamp = now + diff
+            if timestamp < start:
+                continue
+            time = timestamp.strftime(TIME_FORMAT_HA)
+            value = row["yhat1"]
             total += value
             if incrementing:
-                timeseries[time] = total
+                timeseries[time] = round(total, 2)
             else:
-                timeseries[time] = value
-        data = {"state": 0, "attributes": {"unit_of_measurement": "kWh", "results" : timeseries}}
+                timeseries[time] = round(value, 2)
+        final = total if incrementing else value
+        data = {"state": round(final, 2), "attributes": {"unit_of_measurement": "kWh", "state_class" : "measurement", "results" : timeseries}}
         print("Saving prediction to {}".format(entity))
         await interface.api_call("/api/states/{}".format(entity), data, post=True)
 
@@ -162,7 +175,7 @@ async def main():
             nw = Prophet()
             await nw.store_data(dataset, start, end, incrementing=True)
             await nw.train()
-            await nw.save_prediction("sensor.givtcp_sa2243g277_load_energy_total_kwh_prediction", interface, incrementing=True)
+            await nw.save_prediction("sensor.givtcp_sa2243g277_load_energy_total_kwh_prediction", interface, start=end, incrementing=True)
 
         print("Waiting")
         await asyncio.sleep(60 * 60)
