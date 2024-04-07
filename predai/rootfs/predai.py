@@ -133,7 +133,7 @@ class Prophet:
             timenow = timenow + timedelta(minutes=30)
 
         print(dataset)
-        return dataset
+        return dataset, value
     
     async def train(self, dataset):
         """
@@ -147,12 +147,12 @@ class Prophet:
         self.forecast = self.model.predict(self.df_future)
         print(self.forecast)
  
-    async def save_prediction(self, entity, interface, start, incrementing=False):
+    async def save_prediction(self, entity, interface, start, incrementing=False, offset=0):
         """
         Save the prediction to Home Assistant.
         """
         pred = self.forecast
-        total = 0
+        total = offset
         timeseries = {}
         now = datetime.now(timezone.utc).astimezone()
 
@@ -201,21 +201,21 @@ async def main():
         nw = Prophet()
         now = datetime.now(timezone.utc).astimezone()
         print("Get history")
-        dataset, start, end = await interface.get_history("sensor.givtcp_sa2243g277_load_energy_total_kwh", now, days=21)
+        dataset, start, end = await interface.get_history("sensor.givtcp_sa2243g277_load_energy_today_kwh", now, days=21)
         print("Get car history")
         carset, start, end = await interface.get_history("sensor.wallbox_portal_added_energy", now, days=21)
         if dataset:
             print("Processing dataset")
-            dataset = await nw.process_dataset(dataset, start, end, incrementing=True)
+            dataset, last_dataset_value = await nw.process_dataset(dataset, start, end, incrementing=True)
         if carset:
             print("Processing carset")
-            carset = await nw.process_dataset(carset, start, end, incrementing=True)
+            carset, last_car_value = await nw.process_dataset(carset, start, end, incrementing=True)
             print("Subtracting carset")
             pruned = await subtract_set(dataset, carset, now)
         else:
             pruned = dataset
         await nw.train(pruned)
-        await nw.save_prediction("sensor.givtcp_sa2243g277_load_energy_total_kwh_prediction", interface, start=end, incrementing=True)
+        await nw.save_prediction("sensor.givtcp_sa2243g277_load_energy_today_kwh_prediction", interface, start=end, incrementing=True, offset=last_dataset_value)
 
         print("Waiting")
         await asyncio.sleep(60 * 60)
