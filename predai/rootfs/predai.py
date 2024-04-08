@@ -11,6 +11,7 @@ import asyncio
 import json
 import ssl
 import math
+import yaml
 
 #  - torch
 #  - neuralprophet==0.8.0
@@ -218,25 +219,45 @@ async def subtract_set(dataset, carset, now):
 async def main():
     interface = HAInterface()
     while True:
-        nw = Prophet(15)
-        now = datetime.now(timezone.utc).astimezone()
-        now=now.replace(second=0, microsecond=0, minute=0)
-        print("Get history")
-        dataset, start, end = await interface.get_history("sensor.givtcp_sa2243g277_load_energy_today_kwh", now, days=21)
-        print("Get car history")
-        carset, start, end = await interface.get_history("sensor.wallbox_portal_added_energy", now, days=21)
-        if dataset:
-            print("Processing dataset")
-            dataset, last_dataset_value = await nw.process_dataset(dataset, start, end, incrementing=True)
-        if carset:
-            print("Processing carset")
-            carset, last_car_value = await nw.process_dataset(carset, start, end, incrementing=True)
-            print("Subtracting carset")
-            pruned = await subtract_set(dataset, carset, now)
+        config = yaml.safe_load(open("/config/predai.yaml"))
+        if not config:
+            print("WARN: predai.yaml is missing, no work to do")
         else:
-            pruned = dataset
-        await nw.train(pruned)
-        await nw.save_prediction("sensor.givtcp_sa2243g277_load_energy_today_kwh_prediction", now, interface, start=end, incrementing=True, reset_daily=True)
+            print("Configuration loaded")
+            sensors = config.get("sensors", [])
+            for sensor in sensors:
+                sensor_name = sensor.get("name", None)
+                car_name = sensor.get("car", None)
+                days = sensor.get("days", 7)
+                incrementing = sensor.get("incrementing", False)
+                reset_daily = sensor.get("reset_daily", False)
+                interval = sensor.get("interval", 30)
+
+                if not sensor_name:
+                    continue
+
+                print("Processing sensor {}".format(sensor_name))
+                
+                nw = Prophet(interval)
+                now = datetime.now(timezone.utc).astimezone()
+                now=now.replace(second=0, microsecond=0, minute=0)
+                dataset, start, end = await interface.get_history(sensor_name, now, days=days)
+                if car_name:
+                    carset, start, end = await interface.get_history(car_name, now, days=days)
+                else:
+                    carset = None
+                if dataset:
+                    print("Processing dataset")
+                    dataset, last_dataset_value = await nw.process_dataset(dataset, start, end, incrementing=incrementing)
+                if carset:
+                    print("Processing carset")
+                    carset, last_car_value = await nw.process_dataset(carset, start, end, incrementing=incrementing)
+                    print("Subtracting carset")
+                    pruned = await subtract_set(dataset, carset, now)
+                else:
+                    pruned = dataset
+                await nw.train(pruned)
+                await nw.save_prediction(sensor_name + "_prediction", now, interface, start=end, incrementing=incrementing, reset_daily=reset_daily)
 
         print("Waiting")
         await asyncio.sleep(60 * 60)
