@@ -1,12 +1,13 @@
 import os
 print("Bootstrap predai")
 
-os.system("ls -l /")
-os.system("ls -l /config")
+print("Copy initial python files")
+os.system("cp /*.py /config")
+  
+if not os.path.exists("/config/predai.yaml"):
+  print("Copy template config file")
+  os.system("cp /*.yaml /config")
 
-if not os.path.exists("/config/predai.py"):
-  print("Copy initial python files")
-  os.system("cp /*.py /config")
 print("Startup")
 os.system("python3 /config/predai.py")
 
