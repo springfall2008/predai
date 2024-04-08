@@ -1,5 +1,3 @@
-print("Test started")
-
 from typing import Any
 import pandas as pd
 from datetime import datetime, timedelta, timezone
@@ -12,9 +10,6 @@ import json
 import ssl
 import math
 import yaml
-
-#  - torch
-#  - neuralprophet==0.8.0
 
 TIMEOUT = 240
 TIME_FORMAT_HA = "%Y-%m-%dT%H:%M:%S%z"
@@ -195,28 +190,32 @@ class Prophet:
         print("Saving prediction to {}".format(entity))
         await interface.api_call("/api/states/{}".format(entity), data, post=True)
 
-async def subtract_set(dataset, carset, now):
+async def subtract_set(dataset, subset, now, incrementing=False):
     """
-    Subtract the carset from the dataset.
+    Subtract the subset from the dataset.
     """
     pruned = pd.DataFrame(columns=["ds", "y"])
     for index, row in dataset.iterrows():
         ds = row["ds"]
         value = row["y"]
         try:
-            car_row = carset.loc[index]
+            car_row = subset.loc[index]
             car_value = car_row["y"]
         except KeyError:
             car_row = None
             car_value = 0
-        #if car_value:
-        #    print("Subtracting {} from {} at time {} car_time {}".format(car_value, value, ds, car_row['ds']))
-        value = max(value - car_value, 0)
+        if incrementing:
+            value = max(value - car_value, 0)
+        else:
+            value = value - car_value
         pruned.loc[len(pruned)] = {"ds": ds, "y": value}
     print("Pruned set: {}".format(pruned))
     return pruned
 
 async def main():
+    """
+    Main function for the prediction AI.
+    """
     interface = HAInterface()
     while True:
         config = yaml.safe_load(open("/config/predai.yaml"))
@@ -227,7 +226,7 @@ async def main():
             sensors = config.get("sensors", [])
             for sensor in sensors:
                 sensor_name = sensor.get("name", None)
-                car_name = sensor.get("car", None)
+                subtract_name = sensor.get("subtract", None)
                 days = sensor.get("days", 7)
                 incrementing = sensor.get("incrementing", False)
                 reset_daily = sensor.get("reset_daily", False)
@@ -242,18 +241,18 @@ async def main():
                 now = datetime.now(timezone.utc).astimezone()
                 now=now.replace(second=0, microsecond=0, minute=0)
                 dataset, start, end = await interface.get_history(sensor_name, now, days=days)
-                if car_name:
-                    carset, start, end = await interface.get_history(car_name, now, days=days)
+                if subtract_name:
+                    subtract_data, start, end = await interface.get_history(subtract_name, now, days=days)
                 else:
-                    carset = None
+                    subtract_data = None
                 if dataset:
                     print("Processing dataset")
                     dataset, last_dataset_value = await nw.process_dataset(dataset, start, end, incrementing=incrementing)
-                if carset:
-                    print("Processing carset")
-                    carset, last_car_value = await nw.process_dataset(carset, start, end, incrementing=incrementing)
-                    print("Subtracting carset")
-                    pruned = await subtract_set(dataset, carset, now)
+                if subtract_data:
+                    print("Processing subtract")
+                    subset, last_car_value = await nw.process_dataset(subtract_data, start, end, incrementing=incrementing)
+                    print("Subtracting data")
+                    pruned = await subtract_set(dataset, subset, now, incrementing=incrementing)
                 else:
                     pruned = dataset
                 await nw.train(pruned)
