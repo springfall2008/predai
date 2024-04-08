@@ -10,6 +10,7 @@ import requests
 import asyncio
 import json
 import ssl
+import math
 
 #  - torch
 #  - neuralprophet==0.8.0
@@ -38,8 +39,7 @@ class HAInterface():
     def __init__(self):
         self.ha_key = os.environ.get("SUPERVISOR_TOKEN")
         self.ha_url = "http://supervisor/core"
-        now = datetime.now(timezone.utc).astimezone()
-        print("HA Interface started {} key {} url {}".format(now, self.ha_key, self.ha_url))
+        print("HA Interface started key {} url {}".format(self.ha_key, self.ha_url))
 
     async def get_history(self, sensor, now, days=7):
         """
@@ -94,8 +94,9 @@ class HAInterface():
         return data
 
 class Prophet:
-    def __init__(self):
+    def __init__(self, period=30):
         set_log_level("ERROR")
+        self.period = 30
 
     async def process_dataset(self, new_data, start_time, end_time, incrementing=False):
         """
@@ -130,7 +131,7 @@ class Prophet:
                 real_value = max(value - last_value, 0)
             dataset.loc[len(dataset)] = {"ds": timenow, "y": real_value}
             last_value = value
-            timenow = timenow + timedelta(minutes=30)
+            timenow = timenow + timedelta(minutes=self.period)
 
         print(dataset)
         return dataset, value
@@ -141,36 +142,55 @@ class Prophet:
         """
         self.model = NeuralProphet()
         # Fit the model on the dataset (this might take a bit)
-        self.metrics = self.model.fit(dataset, freq="30min")
+        self.metrics = self.model.fit(dataset, freq=(str(self.period) + "min"))
         # Create a new dataframe reaching 96 into the future for our forecast, n_historic_predictions also shows historic data
         self.df_future = self.model.make_future_dataframe(dataset, n_historic_predictions=True, periods=96)
         self.forecast = self.model.predict(self.df_future)
         print(self.forecast)
  
-    async def save_prediction(self, entity, interface, start, incrementing=False, offset=0):
+    async def save_prediction(self, entity, now, interface, start, incrementing=False, reset_daily=False):
         """
         Save the prediction to Home Assistant.
         """
         pred = self.forecast
-        total = offset
+        total = 0
+        total_org = 0
         timeseries = {}
-        now = datetime.now(timezone.utc).astimezone()
+        timeseries_org = {}
 
         for index, row in pred.iterrows():
             ptimestamp = row["ds"].tz_localize(timezone.utc)
             diff = ptimestamp - now
             timestamp = now + diff
-            if timestamp < start:
-                continue
+            #if timestamp < start:
+            #    continue
             time = timestamp.strftime(TIME_FORMAT_HA)
             value = row["yhat1"]
+            value_org = row["y"]
+
+            # Daily reset?
+            if timestamp <= now:
+                if reset_daily and timestamp.hour == 0 and timestamp.minute == 0:
+                    total = 0
+                    total_org = 0
+
             total += value
+            if not math.isnan(value_org):
+                total_org += value_org
+            else:
+                value_org = None
+        
             if incrementing:
                 timeseries[time] = round(total, 2)
+                if value_org:
+                    timeseries_org[time] = round(total_org, 2)
             else:
                 timeseries[time] = round(value, 2)
+                if value_org:
+                    timeseries_org[time] = round(value_org, 2)
+
         final = total if incrementing else value
-        data = {"state": round(final, 2), "attributes": {"unit_of_measurement": "kWh", "state_class" : "measurement", "results" : timeseries}}
+        data = {"state": round(final, 2), "attributes": {"unit_of_measurement": "kWh", "state_class" : "measurement", "results" : timeseries, "source" : timeseries_org}}
         print("Saving prediction to {}".format(entity))
         await interface.api_call("/api/states/{}".format(entity), data, post=True)
 
@@ -198,8 +218,9 @@ async def subtract_set(dataset, carset, now):
 async def main():
     interface = HAInterface()
     while True:
-        nw = Prophet()
+        nw = Prophet(15)
         now = datetime.now(timezone.utc).astimezone()
+        now=now.replace(second=0, microsecond=0, minute=0)
         print("Get history")
         dataset, start, end = await interface.get_history("sensor.givtcp_sa2243g277_load_energy_today_kwh", now, days=21)
         print("Get car history")
@@ -215,7 +236,7 @@ async def main():
         else:
             pruned = dataset
         await nw.train(pruned)
-        await nw.save_prediction("sensor.givtcp_sa2243g277_load_energy_today_kwh_prediction", interface, start=end, incrementing=True, offset=last_dataset_value)
+        await nw.save_prediction("sensor.givtcp_sa2243g277_load_energy_today_kwh_prediction", now, interface, start=end, incrementing=True, reset_daily=True)
 
         print("Waiting")
         await asyncio.sleep(60 * 60)
