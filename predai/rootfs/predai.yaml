@@ -1,6 +1,6 @@
 sensors:
   - name: sensor.givtcp_sa2243g277_load_energy_today_kwh
-    car: sensor.wallbox_portal_added_energy
+    subtract: sensor.wallbox_portal_added_energy
     days: 14
     incrementing: True
     reset_daily: True
