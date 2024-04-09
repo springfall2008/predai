@@ -94,4 +94,17 @@ series:
       b[0]  })
 ```
 
+## Use within Predbat
 
+You can use the AI load prediction in Predbat by setting it in the apps.yaml
+
+This will disable the use of Predbat internal predictions and instead use the AI based one for load forecasts.
+
+e.g.
+
+```yaml
+  load_forecast_only: True
+  load_forecast_increment: True
+  load_forecast:
+     - sensor.givtcp_{geserial}_load_energy_today_kwh_prediction$results
+```
