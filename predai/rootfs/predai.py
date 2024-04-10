@@ -144,7 +144,7 @@ class Prophet:
         self.forecast = self.model.predict(self.df_future)
         print(self.forecast)
  
-    async def save_prediction(self, entity, now, interface, start, incrementing=False, reset_daily=False):
+    async def save_prediction(self, entity, now, interface, start, incrementing=False, reset_daily=False, units=""):
         """
         Save the prediction to Home Assistant.
         """
@@ -186,7 +186,7 @@ class Prophet:
                     timeseries_org[time] = round(value_org, 2)
 
         final = total if incrementing else value
-        data = {"state": round(final, 2), "attributes": {"unit_of_measurement": "kWh", "state_class" : "measurement", "results" : timeseries, "source" : timeseries_org}}
+        data = {"state": round(final, 2), "attributes": {"unit_of_measurement": units, "state_class" : "measurement", "results" : timeseries, "source" : timeseries_org}}
         print("Saving prediction to {}".format(entity))
         await interface.api_call("/api/states/{}".format(entity), data, post=True)
 
@@ -231,6 +231,7 @@ async def main():
                 incrementing = sensor.get("incrementing", False)
                 reset_daily = sensor.get("reset_daily", False)
                 interval = sensor.get("interval", 30)
+                units = sensor.get("units", "")
 
                 if not sensor_name:
                     continue
@@ -256,7 +257,7 @@ async def main():
                 else:
                     pruned = dataset
                 await nw.train(pruned)
-                await nw.save_prediction(sensor_name + "_prediction", now, interface, start=end, incrementing=incrementing, reset_daily=reset_daily)
+                await nw.save_prediction(sensor_name + "_prediction", now, interface, start=end, incrementing=incrementing, reset_daily=reset_daily, units=units)
 
         print("Waiting")
         await asyncio.sleep(60 * 60)
