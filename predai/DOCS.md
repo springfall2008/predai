@@ -104,7 +104,6 @@ e.g.
 
 ```yaml
   load_forecast_only: True
-  load_forecast_increment: True
   load_forecast:
      - sensor.givtcp_{geserial}_load_energy_today_kwh_prediction$results
 ```
