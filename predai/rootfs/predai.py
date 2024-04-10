@@ -92,7 +92,7 @@ class HAInterface():
 class Prophet:
     def __init__(self, period=30):
         set_log_level("ERROR")
-        self.period = 30
+        self.period = period
 
     async def process_dataset(self, new_data, start_time, end_time, incrementing=False):
         """
@@ -138,7 +138,7 @@ class Prophet:
         """
         self.model = NeuralProphet()
         # Fit the model on the dataset (this might take a bit)
-        self.metrics = self.model.fit(dataset, freq=(str(self.period) + "min"))
+        self.metrics = self.model.fit(dataset, freq=(str(self.period) + "min"), progress=None)
         # Create a new dataframe reaching 96 into the future for our forecast, n_historic_predictions also shows historic data
         self.df_future = self.model.make_future_dataframe(dataset, n_historic_predictions=True, periods=96)
         self.forecast = self.model.predict(self.df_future)
@@ -235,7 +235,7 @@ async def main():
                 if not sensor_name:
                     continue
 
-                print("Processing sensor {}".format(sensor_name))
+                print("Processing sensor {} incrementing {} reset_daily {} interval {} days {} subtract {}".format(sensor_name, incrementing, reset_daily, interval, days, subtract_name))
                 
                 nw = Prophet(interval)
                 now = datetime.now(timezone.utc).astimezone()
