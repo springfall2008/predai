@@ -27,7 +27,13 @@ sensors:
     days: 14
     incrementing: True
     reset_daily: True
-    interval: 15
+    interval: 30
+    units: kWh
+  - name: sensor.external_temperature
+    days: 14
+    interval: 30
+    incrementing: False
+    units: c
 ```
 
 **Sensors** This is an array of entities to predict the future on
@@ -38,6 +44,7 @@ sensors:
   - **incrementing** - When true the sensor is always incrementing (e.g. energy used), but can include resets. When False they are individual values.
   - **reset_daily** - When true the sensor value is reset to 0 at midnight (e.g. energy per day)
   - **interval** - Sets the prediction inverval, should divide into 60 e.g. 5, 10 , 15 , 30
+  - **Units** - Sets the output Unit to report in HA
 
 A new sensor with the name **name**_prediction will be created, this will contain two series:
   - **results** contains the time series of the predictions, starts in the past so you can plot corrolation
