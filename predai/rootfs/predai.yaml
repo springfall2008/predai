@@ -1,7 +1,15 @@
-sensors:
-  - name: sensor.givtcp_sa2243g277_load_energy_today_kwh
-    subtract: sensor.wallbox_portal_added_energy
-    days: 14
-    incrementing: True
-    reset_daily: True
-    interval: 15
+# Example configurations are below, you must set up your own sensors
+
+#sensors:
+#  - name: sensor.givtcp_sa2243g277_load_energy_today_kwh
+#    subtract: sensor.wallbox_portal_added_energy
+#    days: 14
+#    incrementing: True
+#    reset_daily: True
+#    interval: 30
+#    units: kWh
+#  - name: sensor.external_temperature
+#    days: 14
+#    interval: 30
+#    incrementing: False
+#    units: c
