@@ -12,3 +12,5 @@ For support please raise a Github ticket.
 
 If you want to buy me a beer then please use Paypal - [tdlj@tdlj.net](mailto:tdlj@tdlj.net)
 ![image](https://github.com/springfall2008/batpred/assets/48591903/b3a533ef-0862-4e0b-b272-30e254f58467)
+
+![image](https://github.com/springfall2008/predai/assets/48591903/7749e2f1-5eda-46f7-bb94-ae3b4d68e188)
