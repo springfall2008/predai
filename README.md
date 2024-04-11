@@ -2,6 +2,8 @@
 
 Predai is a NeuralProphet integration for Home Assistant than can be used to predict future values of sensors given the history of that sensor.
 
+![predai_icon](https://github.com/springfall2008/predai/assets/48591903/044e67d8-ea34-42ae-80ba-09862d0ed280)
+
 It can be linked with Predbat as a possible source of future load prediction.
 
 This is work in progress, if you want to help out please get in touch.
