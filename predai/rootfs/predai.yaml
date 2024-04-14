@@ -1,5 +1,7 @@
 # Example configurations are below, you must set up your own sensors
 
+update_every: 30
+
 #sensors:
 #  - name: sensor.givtcp_sa2243g277_load_energy_today_kwh
 #    subtract: sensor.wallbox_portal_added_energy
@@ -8,8 +10,10 @@
 #    reset_daily: True
 #    interval: 30
 #    units: kWh
+#    future_periods: 96
 #  - name: sensor.external_temperature
 #    days: 14
 #    interval: 30
 #    incrementing: False
 #    units: c
+#    future_periods: 96
