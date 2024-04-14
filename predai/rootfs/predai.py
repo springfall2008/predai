@@ -132,7 +132,7 @@ class Prophet:
         print(dataset)
         return dataset, value
     
-    async def train(self, dataset):
+    async def train(self, dataset, future_periods):
         """
         Train the model on the dataset.
         """
@@ -140,7 +140,7 @@ class Prophet:
         # Fit the model on the dataset (this might take a bit)
         self.metrics = self.model.fit(dataset, freq=(str(self.period) + "min"), progress=None)
         # Create a new dataframe reaching 96 into the future for our forecast, n_historic_predictions also shows historic data
-        self.df_future = self.model.make_future_dataframe(dataset, n_historic_predictions=True, periods=96)
+        self.df_future = self.model.make_future_dataframe(dataset, n_historic_predictions=True, periods=future_periods)
         self.forecast = self.model.predict(self.df_future)
         print(self.forecast)
  
@@ -186,8 +186,8 @@ class Prophet:
                     timeseries_org[time] = round(value_org, 2)
 
         final = total if incrementing else value
-        data = {"state": round(final, 2), "attributes": {"unit_of_measurement": units, "state_class" : "measurement", "results" : timeseries, "source" : timeseries_org}}
-        print("Saving prediction to {}".format(entity))
+        data = {"state": round(final, 2), "attributes": {"last_updated": str(now), "unit_of_measurement": units, "state_class" : "measurement", "results" : timeseries, "source" : timeseries_org}}
+        print("Saving prediction to {} last_update {}".format(entity, str(now)))
         await interface.api_call("/api/states/{}".format(entity), data, post=True)
 
 async def subtract_set(dataset, subset, now, incrementing=False):
@@ -223,6 +223,7 @@ async def main():
             print("WARN: predai.yaml is missing, no work to do")
         else:
             print("Configuration loaded")
+            update_every = config.get('update_every', 30)
             sensors = config.get("sensors", [])
             for sensor in sensors:
                 sensor_name = sensor.get("name", None)
@@ -232,6 +233,7 @@ async def main():
                 reset_daily = sensor.get("reset_daily", False)
                 interval = sensor.get("interval", 30)
                 units = sensor.get("units", "")
+                future_periods = sensor.get("future_periods", 96)
 
                 if not sensor_name:
                     continue
@@ -256,10 +258,10 @@ async def main():
                     pruned = await subtract_set(dataset, subset, now, incrementing=incrementing)
                 else:
                     pruned = dataset
-                await nw.train(pruned)
+                await nw.train(pruned, future_periods)
                 await nw.save_prediction(sensor_name + "_prediction", now, interface, start=end, incrementing=incrementing, reset_daily=reset_daily, units=units)
 
-        print("Waiting")
-        await asyncio.sleep(60 * 60)
+        print("Waiting for {} minutes".format(update_every))
+        await asyncio.sleep(60 * update_every)
 
 asyncio.run(main())
