@@ -21,6 +21,7 @@ PredAI is a Home Assistant Add On, install it by going to:
 Example configuration
 
 ```yaml
+update_every: 30
 sensors:
   - name: sensor.givtcp_sa2243g277_load_energy_today_kwh
     subtract: sensor.wallbox_portal_added_energy
@@ -29,12 +30,16 @@ sensors:
     reset_daily: True
     interval: 30
     units: kWh
+    future_periods: 96
   - name: sensor.external_temperature
     days: 14
     interval: 30
     incrementing: False
     units: c
+    future_periods: 96
 ```
+
+**update_every** Sets the frequency of updates in minutes
 
 **Sensors** This is an array of entities to predict the future on
 
@@ -45,6 +50,7 @@ sensors:
   - **reset_daily** - When true the sensor value is reset to 0 at midnight (e.g. energy per day)
   - **interval** - Sets the prediction inverval, should divide into 60 e.g. 5, 10 , 15 , 30
   - **Units** - Sets the output Unit to report in HA
+  - **future_periods** - Sets the number of periods (of interval minutes) to predict into the future
 
 A new sensor with the name **name**_prediction will be created, this will contain two series:
   - **results** contains the time series of the predictions, starts in the past so you can plot corrolation
