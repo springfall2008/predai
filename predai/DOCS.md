@@ -31,6 +31,7 @@ sensors:
     interval: 30
     units: kWh
     future_periods: 96
+    database: True
   - name: sensor.external_temperature
     days: 14
     interval: 30
@@ -51,6 +52,8 @@ sensors:
   - **interval** - Sets the prediction inverval, should divide into 60 e.g. 5, 10 , 15 , 30
   - **Units** - Sets the output Unit to report in HA
   - **future_periods** - Sets the number of periods (of interval minutes) to predict into the future
+  - **database** - When True all data is stored in a sqllite3 database in the addon directory, this will keep a full history beyond what HA keeps and use
+that history for training.
 
 A new sensor with the name **name**_prediction will be created, this will contain two series:
   - **results** contains the time series of the predictions, starts in the past so you can plot corrolation
