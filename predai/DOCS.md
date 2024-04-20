@@ -54,6 +54,7 @@ sensors:
   - **future_periods** - Sets the number of periods (of interval minutes) to predict into the future
   - **database** - When True all data is stored in a sqllite3 database in the addon directory, this will keep a full history beyond what HA keeps and use
 that history for training.
+  - **export_days** - Sets how many days of history to include in the HA entities that are created, recommended values are 7-14. The default is **days**
 
 A new sensor with the name **name**_prediction will be created, this will contain two series:
   - **results** contains the time series of the predictions, starts in the past so you can plot corrolation
