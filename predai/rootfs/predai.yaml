@@ -11,6 +11,7 @@ update_every: 30
 #    interval: 30
 #    units: kWh
 #    future_periods: 96
+#    database: True
 #  - name: sensor.external_temperature
 #    days: 14
 #    interval: 30
