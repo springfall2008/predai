@@ -1,5 +1,7 @@
 from typing import Any
 import pandas as pd
+import numpy as np
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from neuralprophet import NeuralProphet, set_log_level
 import os
@@ -50,6 +52,8 @@ class HAInterface():
         res = await self.api_call("/api/history/period/{}".format(start.strftime(TIME_FORMAT_HA)), {"filter_entity_id": sensor, "end_time": end.strftime(TIME_FORMAT_HA)})
         if res:
             res = res[0]
+            start = timestr_to_datetime(res[0]["last_updated"])
+        print("History for sensor {} starts at {}".format(sensor, start))
         return res, start, end
 
     async def api_call(self, endpoint, datain=None, post=False):
@@ -195,23 +199,93 @@ async def subtract_set(dataset, subset, now, incrementing=False):
     Subtract the subset from the dataset.
     """
     pruned = pd.DataFrame(columns=["ds", "y"])
+    count = 0
     for index, row in dataset.iterrows():
         ds = row["ds"]
         value = row["y"]
-        try:
-            car_row = subset.loc[index]
-            car_value = car_row["y"]
-        except KeyError:
-            car_row = None
-            car_value = 0
+        car_value = 0
+
+        car_row = subset.loc[subset["ds"] == ds]
+        if not car_row.empty:
+            car_value = car_row["y"].values[0]
+            count += 1
+
         if incrementing:
             value = max(value - car_value, 0)
         else:
             value = value - car_value
         pruned.loc[len(pruned)] = {"ds": ds, "y": value}
-    print("Pruned set: {}".format(pruned))
+    print("Subtracted {} values into new set: {}".format(count, pruned))
     return pruned
 
+class Database():
+    def __init__(self):
+        self.con = sqlite3.connect('/config/predai.db')
+        self.cur = self.con.cursor()
+
+    async def create_table(self, table):
+        """
+        Create a table in the database by table if it does not exist.
+        """
+        print("Create table {}".format(table))
+        self.cur.execute("CREATE TABLE IF NOT EXISTS {} (timestamp TEXT PRIMARY KEY, value REAL)".format(table))
+        self.con.commit()
+
+    async def get_history(self, table):
+        """
+        Get the history from the database, sorted by timestamp.
+        Returns a Dataframe with the history data.
+        """
+        self.cur.execute("SELECT * FROM {} ORDER BY timestamp".format(table))
+        rows = self.cur.fetchall()
+        history = pd.DataFrame(columns=["ds", "y"])
+        if not rows:
+            return history
+        for row in rows:
+            timestamp = row[0]
+            value = row[1]
+            history.loc[len(history)] = {"ds": timestamp, "y": value}
+        return history
+
+    async def store_history(self, table, history, prev=None):
+        """
+        Store the history in the database.
+        Only the data associated with TIMESTAMPs not already in the database will be stored.
+        Returns the updated history DataFrame.
+
+        :param table: The table to store the history in.
+        :param history: The history data as a DataFrame.
+        """
+        added_rows = 0
+        prev_values = prev["ds"].values
+        prev_values = prev_values.tolist()
+
+        for index, row in history.iterrows():
+            timestamp = str(row["ds"])
+            value = row["y"]
+            if timestamp not in prev_values:
+                prev.loc[len(prev)] = {"ds": timestamp, "y": value}
+                self.cur.execute("INSERT INTO {} (timestamp, value) VALUES ('{}', {})".format(table, timestamp, value))
+                added_rows += 1
+        self.con.commit()
+        print("Added {} rows to database table {}".format(added_rows, table))
+        return prev
+
+async def get_history(interface, nw, sensor_name, now, incrementing, days, use_db):
+    """
+    Get history from HA, combine it with the database if use_db is True.
+    """
+    dataset, start, end = await interface.get_history(sensor_name, now, days=days)
+    dataset, last_dataset_value = await nw.process_dataset(dataset, start, end, incrementing=incrementing)
+    if use_db:
+        table_name = sensor_name.replace(".", "_")  # SQLite does not like dots in table names
+        db = Database()
+        await db.create_table(table_name)
+        prev = await db.get_history(table_name)
+        dataset = await db.store_history(table_name, dataset, prev)
+        print("Stored dataset in database and retrieved full history from database length {}".format(len(dataset)))
+    return dataset, start, end
+    
 async def main():
     """
     Main function for the prediction AI.
@@ -234,6 +308,7 @@ async def main():
                 interval = sensor.get("interval", 30)
                 units = sensor.get("units", "")
                 future_periods = sensor.get("future_periods", 96)
+                use_db = sensor.get("database", False)
 
                 if not sensor_name:
                     continue
@@ -243,22 +318,27 @@ async def main():
                 nw = Prophet(interval)
                 now = datetime.now(timezone.utc).astimezone()
                 now=now.replace(second=0, microsecond=0, minute=0)
-                dataset, start, end = await interface.get_history(sensor_name, now, days=days)
+
+                # Get the data
+                dataset, start, end = await get_history(interface, nw, sensor_name, now, incrementing, days, use_db)
+
+                # Get the subtract data
                 if subtract_name:
-                    subtract_data, start, end = await interface.get_history(subtract_name, now, days=days)
+                    subtract_data, start, end = await get_history(interface, nw, subtract_name, now, incrementing, days, use_db)
                 else:
                     subtract_data = None
-                if dataset:
-                    print("Processing dataset")
-                    dataset, last_dataset_value = await nw.process_dataset(dataset, start, end, incrementing=incrementing)
-                if subtract_data:
-                    print("Processing subtract")
-                    subset, last_car_value = await nw.process_dataset(subtract_data, start, end, incrementing=incrementing)
+
+                # Subtract the data
+                if subtract_data is not None:
                     print("Subtracting data")
-                    pruned = await subtract_set(dataset, subset, now, incrementing=incrementing)
+                    pruned = await subtract_set(dataset, subtract_data, now, incrementing=incrementing)
                 else:
                     pruned = dataset
+
+                # Start training
                 await nw.train(pruned, future_periods)
+
+                # Save the prediction
                 await nw.save_prediction(sensor_name + "_prediction", now, interface, start=end, incrementing=incrementing, reset_daily=reset_daily, units=units)
 
         print("Waiting for {} minutes".format(update_every))
