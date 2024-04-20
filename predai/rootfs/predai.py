@@ -148,7 +148,7 @@ class Prophet:
         self.forecast = self.model.predict(self.df_future)
         print(self.forecast)
  
-    async def save_prediction(self, entity, now, interface, start, incrementing=False, reset_daily=False, units=""):
+    async def save_prediction(self, entity, now, interface, start, incrementing=False, reset_daily=False, units="", days=7):
         """
         Save the prediction to Home Assistant.
         """
@@ -162,8 +162,7 @@ class Prophet:
             ptimestamp = row["ds"].tz_localize(timezone.utc)
             diff = ptimestamp - now
             timestamp = now + diff
-            #if timestamp < start:
-            #    continue
+                
             time = timestamp.strftime(TIME_FORMAT_HA)
             value = row["yhat1"]
             value_org = row["y"]
@@ -179,7 +178,11 @@ class Prophet:
                 total_org += value_org
             else:
                 value_org = None
-        
+
+            # Avoid too much history in HA
+            if diff.days < -days:
+                continue
+       
             if incrementing:
                 timeseries[time] = round(total, 2)
                 if value_org:
@@ -303,6 +306,7 @@ async def main():
                 sensor_name = sensor.get("name", None)
                 subtract_name = sensor.get("subtract", None)
                 days = sensor.get("days", 7)
+                export_days = sensor.get("export_days", days)
                 incrementing = sensor.get("incrementing", False)
                 reset_daily = sensor.get("reset_daily", False)
                 interval = sensor.get("interval", 30)
@@ -313,7 +317,7 @@ async def main():
                 if not sensor_name:
                     continue
 
-                print("Processing sensor {} incrementing {} reset_daily {} interval {} days {} subtract {}".format(sensor_name, incrementing, reset_daily, interval, days, subtract_name))
+                print("Processing sensor {} incrementing {} reset_daily {} interval {} days {} export_days {} subtract {}".format(sensor_name, incrementing, reset_daily, interval, days, export_days, subtract_name))
                 
                 nw = Prophet(interval)
                 now = datetime.now(timezone.utc).astimezone()
@@ -339,7 +343,7 @@ async def main():
                 await nw.train(pruned, future_periods)
 
                 # Save the prediction
-                await nw.save_prediction(sensor_name + "_prediction", now, interface, start=end, incrementing=incrementing, reset_daily=reset_daily, units=units)
+                await nw.save_prediction(sensor_name + "_prediction", now, interface, start=end, incrementing=incrementing, reset_daily=reset_daily, units=units, days=export_days)
 
         print("Waiting for {} minutes".format(update_every))
         await asyncio.sleep(60 * update_every)
