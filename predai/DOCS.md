@@ -32,6 +32,8 @@ sensors:
     units: kWh
     future_periods: 96
     database: True
+    reset_low: 1.0
+    reset_high: 2.0
   - name: sensor.external_temperature
     days: 14
     interval: 30
@@ -52,9 +54,11 @@ sensors:
   - **interval** - Sets the prediction inverval, should divide into 60 e.g. 5, 10 , 15 , 30
   - **Units** - Sets the output Unit to report in HA
   - **future_periods** - Sets the number of periods (of interval minutes) to predict into the future
-  - **database** - When True all data is stored in a sqllite3 database in the addon directory, this will keep a full history beyond what HA keeps and use
-that history for training.
+  - **database** - When True (default) all data is stored in a sqllite3 database in the addon directory, this will keep a full history beyond what HA keeps and use
+that history for training. You can browse the data using an SQL Lite viewer on your computer.
   - **export_days** - Sets how many days of history to include in the HA entities that are created, recommended values are 7-14. The default is **days**
+  - **reset_low/reset_high** - For incrementing sensors if the sensor goes above **reset_high** and then falls below **reset_low** then its considered a reset even
+  if it never goes to 0.
 
 A new sensor with the name **name**_prediction will be created, this will contain two series:
   - **results** contains the time series of the predictions, starts in the past so you can plot corrolation
