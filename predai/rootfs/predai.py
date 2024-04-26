@@ -53,7 +53,8 @@ class HAInterface():
         if res:
             res = res[0]
             start = timestr_to_datetime(res[0]["last_updated"])
-        print("History for sensor {} starts at {}".format(sensor, start))
+            end = timestr_to_datetime(res[-1]["last_updated"])
+        print("History for sensor {} starts at {} ends at {}".format(sensor, start, end))
         return res, start, end
 
     async def api_call(self, endpoint, datain=None, post=False):
@@ -98,7 +99,7 @@ class Prophet:
         set_log_level("ERROR")
         self.period = period
 
-    async def process_dataset(self, new_data, start_time, end_time, incrementing=False):
+    async def process_dataset(self, sensor_name, new_data, start_time, end_time, incrementing=False, reset_low=0.0, reset_high=0.0):
         """
         Store the data in the dataset for training.
         """
@@ -108,10 +109,9 @@ class Prophet:
         timenow = timenow.replace(second=0, microsecond=0)
         data_index = 0
         value = 0
-        last_value = 0
-        if incrementing:
-            last_value = float(new_data[0]["state"])
+        last_value = float(new_data[0]["state"])
         data_len = len(new_data)
+        total = 0
 
         while timenow < end_time and data_index < data_len:
             try:
@@ -121,6 +121,14 @@ class Prophet:
 
             last_updated = new_data[data_index]["last_updated"]
             start_time = timestr_to_datetime(last_updated)
+
+            if incrementing:
+                # Reset?
+                if value < last_value and value < reset_low and last_value > reset_high:
+                    total = total + value
+                else:
+                    total = max(total + value - last_value, 0)
+            last_value = value
         
             if not start_time or start_time < timenow:
                 data_index += 1
@@ -128,12 +136,14 @@ class Prophet:
 
             real_value = value
             if incrementing:
-                real_value = max(value - last_value, 0)
+                real_value = max(0, total)
+                total = 0
             dataset.loc[len(dataset)] = {"ds": timenow, "y": real_value}
-            last_value = value
             timenow = timenow + timedelta(minutes=self.period)
 
         print(dataset)
+        # dataset.to_csv('/config/{}.csv'.format(sensor_name), index=False) 
+
         return dataset, value
     
     async def train(self, dataset, future_periods):
@@ -274,12 +284,23 @@ class Database():
         print("Added {} rows to database table {}".format(added_rows, table))
         return prev
 
-async def get_history(interface, nw, sensor_name, now, incrementing, days, use_db):
+async def print_dataset(name, dataset):
+    count = 0
+    for index, row in dataset.iterrows():
+        timestamp = str(row["ds"])
+        value = row["y"]
+        print("Got dataset {} row {} {}".format(name, timestamp, value))
+        count += 1
+        if count > 24:
+            break
+
+async def get_history(interface, nw, sensor_name, now, incrementing, days, use_db, reset_low, reset_high):
     """
     Get history from HA, combine it with the database if use_db is True.
     """
     dataset, start, end = await interface.get_history(sensor_name, now, days=days)
-    dataset, last_dataset_value = await nw.process_dataset(dataset, start, end, incrementing=incrementing)
+    dataset, last_dataset_value = await nw.process_dataset(sensor_name, dataset, start, end, incrementing=incrementing, reset_low=reset_low, reset_high=reset_high)
+
     if use_db:
         table_name = sensor_name.replace(".", "_")  # SQLite does not like dots in table names
         db = Database()
@@ -312,7 +333,9 @@ async def main():
                 interval = sensor.get("interval", 30)
                 units = sensor.get("units", "")
                 future_periods = sensor.get("future_periods", 96)
-                use_db = sensor.get("database", False)
+                use_db = sensor.get("database", True)
+                reset_low = sensor.get("reset_low", 1.0)
+                reset_high = sensor.get("reset_high", 2.0)
 
                 if not sensor_name:
                     continue
@@ -324,11 +347,11 @@ async def main():
                 now=now.replace(second=0, microsecond=0, minute=0)
 
                 # Get the data
-                dataset, start, end = await get_history(interface, nw, sensor_name, now, incrementing, days, use_db)
+                dataset, start, end = await get_history(interface, nw, sensor_name, now, incrementing, days, use_db, reset_low, reset_high)
 
                 # Get the subtract data
                 if subtract_name:
-                    subtract_data, start, end = await get_history(interface, nw, subtract_name, now, incrementing, days, use_db)
+                    subtract_data, start, end = await get_history(interface, nw, subtract_name, now, incrementing, days, use_db, reset_low, reset_high)
                 else:
                     subtract_data = None
 
