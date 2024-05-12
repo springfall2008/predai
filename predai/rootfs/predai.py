@@ -109,15 +109,20 @@ class Prophet:
         timenow = timenow.replace(second=0, microsecond=0)
         data_index = 0
         value = 0
-        last_value = float(new_data[0]["state"])
         data_len = len(new_data)
         total = 0
+        last_value = None
 
         while timenow < end_time and data_index < data_len:
             try:
                 value = float(new_data[data_index]["state"])
+                if last_value is None:
+                    last_value = value
             except ValueError:
-                value = last_value
+                if last_value is not None:
+                    value = last_value
+                else:
+                    continue
 
             last_updated = new_data[data_index]["last_updated"]
             start_time = timestr_to_datetime(last_updated)
@@ -146,11 +151,11 @@ class Prophet:
 
         return dataset, value
     
-    async def train(self, dataset, future_periods):
+    async def train(self, dataset, future_periods, n_lags=0):
         """
         Train the model on the dataset.
         """
-        self.model = NeuralProphet()
+        self.model = NeuralProphet(n_lags=n_lags, yearly_seasonality=False, weekly_seasonality=True, daily_seasonality=True)
         # Fit the model on the dataset (this might take a bit)
         self.metrics = self.model.fit(dataset, freq=(str(self.period) + "min"), progress=None)
         # Create a new dataframe reaching 96 into the future for our forecast, n_historic_predictions also shows historic data
@@ -325,7 +330,7 @@ async def main():
             sensors = config.get("sensors", [])
             for sensor in sensors:
                 sensor_name = sensor.get("name", None)
-                subtract_name = sensor.get("subtract", None)
+                subtract_names = sensor.get("subtract", None)
                 days = sensor.get("days", 7)
                 export_days = sensor.get("export_days", days)
                 incrementing = sensor.get("incrementing", False)
@@ -336,11 +341,12 @@ async def main():
                 use_db = sensor.get("database", True)
                 reset_low = sensor.get("reset_low", 1.0)
                 reset_high = sensor.get("reset_high", 2.0)
+                n_lags = sensor.get("n_lags", 0)
 
                 if not sensor_name:
                     continue
 
-                print("Processing sensor {} incrementing {} reset_daily {} interval {} days {} export_days {} subtract {}".format(sensor_name, incrementing, reset_daily, interval, days, export_days, subtract_name))
+                print("Processing sensor {} incrementing {} reset_daily {} interval {} days {} export_days {} subtract {}".format(sensor_name, incrementing, reset_daily, interval, days, export_days, subtract_names))
                 
                 nw = Prophet(interval)
                 now = datetime.now(timezone.utc).astimezone()
@@ -350,20 +356,22 @@ async def main():
                 dataset, start, end = await get_history(interface, nw, sensor_name, now, incrementing, days, use_db, reset_low, reset_high)
 
                 # Get the subtract data
-                if subtract_name:
-                    subtract_data, start, end = await get_history(interface, nw, subtract_name, now, incrementing, days, use_db, reset_low, reset_high)
-                else:
-                    subtract_data = None
+                subtract_data_list = []
+                if subtract_names:
+                    if isinstance(subtract_names, str):
+                        subtract_names = [subtract_names]
+                    for subtract_name in subtract_names:
+                        subtract_data, sub_start, sub_end = await get_history(interface, nw, subtract_name, now, incrementing, days, use_db, reset_low, reset_high)
+                        subtract_data_list.append(subtract_data)
 
                 # Subtract the data
-                if subtract_data is not None:
+                if subtract_data_list:
                     print("Subtracting data")
-                    pruned = await subtract_set(dataset, subtract_data, now, incrementing=incrementing)
-                else:
-                    pruned = dataset
+                    for subtract_data in subtract_data_list:
+                        dataset = await subtract_set(dataset, subtract_data, now, incrementing=incrementing)
 
                 # Start training
-                await nw.train(pruned, future_periods)
+                await nw.train(dataset, future_periods, n_lags=n_lags)
 
                 # Save the prediction
                 await nw.save_prediction(sensor_name + "_prediction", now, interface, start=end, incrementing=incrementing, reset_daily=reset_daily, units=units, days=export_days)
