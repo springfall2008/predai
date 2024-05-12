@@ -48,7 +48,7 @@ class HAInterface():
         """
         start = now - timedelta(days=days)
         end = now
-        print("Getting history for sensor {}".format(sensor))
+        print("Getting history for sensor {} start {} end {}".format(sensor, start.strftime(TIME_FORMAT_HA), end.strftime(TIME_FORMAT_HA)))
         res = await self.api_call("/api/history/period/{}".format(start.strftime(TIME_FORMAT_HA)), {"filter_entity_id": sensor, "end_time": end.strftime(TIME_FORMAT_HA)})
         if res:
             res = res[0]
@@ -113,7 +113,8 @@ class Prophet:
         total = 0
         last_value = None
 
-        while timenow < end_time and data_index < data_len:
+        print("Process dataset for sensor {} start {} end {} incrementing {} reset_low {} reset_high {}".format(sensor_name, start_time, end_time, incrementing, reset_low, reset_high))
+        while timenow <= end_time and data_index < data_len:
             try:
                 value = float(new_data[data_index]["state"])
                 if last_value is None:
@@ -346,11 +347,12 @@ async def main():
                 if not sensor_name:
                     continue
 
-                print("Processing sensor {} incrementing {} reset_daily {} interval {} days {} export_days {} subtract {}".format(sensor_name, incrementing, reset_daily, interval, days, export_days, subtract_names))
                 
                 nw = Prophet(interval)
                 now = datetime.now(timezone.utc).astimezone()
                 now=now.replace(second=0, microsecond=0, minute=0)
+
+                print("Update at time {} Processing sensor {} incrementing {} reset_daily {} interval {} days {} export_days {} subtract {}".format(now, sensor_name, incrementing, reset_daily, interval, days, export_days, subtract_names))
 
                 # Get the data
                 dataset, start, end = await get_history(interface, nw, sensor_name, now, incrementing, days, use_db, reset_low, reset_high)
