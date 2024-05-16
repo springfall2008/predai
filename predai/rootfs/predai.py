@@ -106,7 +106,7 @@ class Prophet:
         dataset = pd.DataFrame(columns=["ds", "y"])
         
         timenow = start_time
-        timenow = timenow.replace(second=0, microsecond=0)
+        timenow = timenow.replace(second=0, microsecond=0, minute=0)
         data_index = 0
         value = 0
         data_len = len(new_data)
@@ -351,6 +351,7 @@ async def main():
                 nw = Prophet(interval)
                 now = datetime.now(timezone.utc).astimezone()
                 now=now.replace(second=0, microsecond=0, minute=0)
+                
 
                 print("Update at time {} Processing sensor {} incrementing {} reset_daily {} interval {} days {} export_days {} subtract {}".format(now, sensor_name, incrementing, reset_daily, interval, days, export_days, subtract_names))
 
