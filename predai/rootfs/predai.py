@@ -39,6 +39,10 @@ class HAInterface():
         self.ha_url = "http://supervisor/core"
         print("HA Interface started key {} url {}".format(self.ha_key, self.ha_url))
 
+    async def get_events(self):
+        res = await self.api_call("/api/events")
+        return res
+
     async def get_history(self, sensor, now, days=7):
         """
         Get the history for a sensor from Home Assistant.
@@ -57,6 +61,28 @@ class HAInterface():
         print("History for sensor {} starts at {} ends at {}".format(sensor, start, end))
         return res, start, end
 
+    async def get_state(self, entity_id=None, default=None, attribute=None):
+        """
+        Get state of an entity in Home Assistant.
+        """
+        item = await self.api_call("/api/states/{}".format(entity_id))
+        if not item:
+            return default
+        elif attribute:
+            attributes = item.get("attributes", {})
+            return attributes.get(attribute, default)
+        else:
+            return item.get("state", default)
+
+    async def set_state(self, entity_id, state, attributes=None):
+        """
+        Set the state of an entity in Home Assistant.
+        """
+        data = {"state": state}
+        if attributes:
+            data["attributes"] = attributes
+        await self.api_call("/api/states/{}".format(entity_id), data, post=True)
+
     async def api_call(self, endpoint, datain=None, post=False):
         """
         Make an API call to Home Assistant.
@@ -67,7 +93,6 @@ class HAInterface():
         :return: The response from the API.
         """
         url = self.ha_url + endpoint
-        print("Making API call to {}".format(url))
         headers = {
             "Authorization": "Bearer " + self.ha_key,
             "Content-Type": "application/json",
@@ -83,7 +108,6 @@ class HAInterface():
                 response = await asyncio.to_thread(requests.get, url, headers=headers, params=datain, timeout=TIMEOUT)
             else:
                 response = await asyncio.to_thread(requests.get, url, headers=headers, timeout=TIMEOUT)
-        print("Response {}".format(response))
         try:
             data = response.json()
         except requests.exceptions.JSONDecodeError:
@@ -209,9 +233,9 @@ class Prophet:
                     timeseries_org[time] = round(value_org, 2)
 
         final = total if incrementing else value
-        data = {"state": round(final, 2), "attributes": {"last_updated": str(now), "unit_of_measurement": units, "state_class" : "measurement", "results" : timeseries, "source" : timeseries_org}}
+        attributes = {"last_updated": str(now), "unit_of_measurement": units, "state_class" : "measurement", "results" : timeseries, "source" : timeseries_org}
         print("Saving prediction to {} last_update {}".format(entity, str(now)))
-        await interface.api_call("/api/states/{}".format(entity), data, post=True)
+        await interface.set_state(entity, state=round(final,2), attributes=attributes)
 
 async def subtract_set(dataset, subset, now, incrementing=False):
     """
@@ -379,7 +403,14 @@ async def main():
                 # Save the prediction
                 await nw.save_prediction(sensor_name + "_prediction", now, interface, start=end, incrementing=incrementing, reset_daily=reset_daily, units=units, days=export_days)
 
-        print("Waiting for {} minutes".format(update_every))
-        await asyncio.sleep(60 * update_every)
+        time_now = datetime.now(timezone.utc).astimezone()
+        await interface.set_state("sensor.predai_last_run", state=str(time_now), attributes={"unit_of_measurement": "time"})
+        print("Waiting for {} minutes at time {}".format(update_every, datetime.now(timezone.utc).astimezone()))
+        for n in range(update_every):
+            last_run = await interface.get_state("sensor.predai_last_run")
+            if last_run is None:
+                print("Restarting PredAI as last-run time has gone")
+                break
+            await asyncio.sleep(60)
 
 asyncio.run(main())
