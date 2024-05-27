@@ -147,6 +147,7 @@ class Prophet:
                 if last_value is not None:
                     value = last_value
                 else:
+                    data_index += 1
                     continue
 
             last_updated = new_data[data_index]["last_updated"]
