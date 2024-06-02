@@ -177,11 +177,14 @@ class Prophet:
 
         return dataset, value
     
-    async def train(self, dataset, future_periods, n_lags=0):
+    async def train(self, dataset, future_periods, n_lags=0, country=None):
         """
         Train the model on the dataset.
         """
-        self.model = NeuralProphet(n_lags=n_lags, yearly_seasonality=False, weekly_seasonality=True, daily_seasonality=True)
+        self.model = NeuralProphet(n_lags=n_lags, yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=True)
+        if country:
+            print("Adding country holidays for {}".format(country))
+            self.model.add_country_holidays(country)
         # Fit the model on the dataset (this might take a bit)
         self.metrics = self.model.fit(dataset, freq=(str(self.period) + "min"), progress=None)
         # Create a new dataframe reaching 96 into the future for our forecast, n_historic_predictions also shows historic data
@@ -368,6 +371,7 @@ async def main():
                 reset_low = sensor.get("reset_low", 1.0)
                 reset_high = sensor.get("reset_high", 2.0)
                 n_lags = sensor.get("n_lags", 0)
+                country = sensor.get("country", None)
 
                 if not sensor_name:
                     continue
@@ -399,7 +403,7 @@ async def main():
                         dataset = await subtract_set(dataset, subtract_data, now, incrementing=incrementing)
 
                 # Start training
-                await nw.train(dataset, future_periods, n_lags=n_lags)
+                await nw.train(dataset, future_periods, n_lags=n_lags, country=country)
 
                 # Save the prediction
                 await nw.save_prediction(sensor_name + "_prediction", now, interface, start=end, incrementing=incrementing, reset_daily=reset_daily, units=units, days=export_days)
