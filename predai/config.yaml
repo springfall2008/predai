@@ -1,6 +1,6 @@
 ---
 name: predai
-version: 1.1.13
+version: 1.1.14
 slug: predai
 description: AI Based time series prediction for Home Assistant
 url: https://github.com/springfall2008/predai
