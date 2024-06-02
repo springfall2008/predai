@@ -34,12 +34,14 @@ sensors:
     database: True
     reset_low: 1.0
     reset_high: 2.0
+    country: UK
   - name: sensor.external_temperature
     days: 14
     interval: 30
     incrementing: False
     units: c
     future_periods: 96
+    country: UK
 ```
 
 **update_every** Sets the frequency of updates in minutes
@@ -59,6 +61,7 @@ that history for training. You can browse the data using an SQL Lite viewer on y
   - **export_days** - Sets how many days of history to include in the HA entities that are created, recommended values are 7-14. The default is **days**
   - **reset_low/reset_high** - For incrementing sensors if the sensor goes above **reset_high** and then falls below **reset_low** then its considered a reset even
   if it never goes to 0.
+  - **country** - When set adds in the specified countries holidays (see https://python-holidays.readthedocs.io/en/latest/)
 
 A new sensor with the name **name**_prediction will be created, this will contain two series:
   - **results** contains the time series of the predictions, starts in the past so you can plot corrolation
