@@ -123,7 +123,7 @@ class Prophet:
         set_log_level("ERROR")
         self.period = period
 
-    async def process_dataset(self, sensor_name, new_data, start_time, end_time, incrementing=False, reset_low=0.0, reset_high=0.0):
+    async def process_dataset(self, sensor_name, new_data, start_time, end_time, incrementing=False, max_increment=0, reset_low=0.0, reset_high=0.0):
         """
         Store the data in the dataset for training.
         """
@@ -158,6 +158,11 @@ class Prophet:
                 if value < last_value and value < reset_low and last_value > reset_high:
                     total = total + value
                 else:
+                    # Filter on max increment
+                    if max_increment and abs(value - last_value) > max_increment:
+                        value = last_value  # Avoid spikes
+
+                    # Update total
                     total = max(total + value - last_value, 0)
             last_value = value
         
@@ -328,12 +333,12 @@ async def print_dataset(name, dataset):
         if count > 24:
             break
 
-async def get_history(interface, nw, sensor_name, now, incrementing, days, use_db, reset_low, reset_high):
+async def get_history(interface, nw, sensor_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high):
     """
     Get history from HA, combine it with the database if use_db is True.
     """
     dataset, start, end = await interface.get_history(sensor_name, now, days=days)
-    dataset, last_dataset_value = await nw.process_dataset(sensor_name, dataset, start, end, incrementing=incrementing, reset_low=reset_low, reset_high=reset_high)
+    dataset, last_dataset_value = await nw.process_dataset(sensor_name, dataset, start, end, incrementing=incrementing, max_increment=max_increment, reset_low=reset_low, reset_high=reset_high)
 
     if use_db:
         table_name = sensor_name.replace(".", "_")  # SQLite does not like dots in table names
@@ -370,6 +375,7 @@ async def main():
                 use_db = sensor.get("database", True)
                 reset_low = sensor.get("reset_low", 1.0)
                 reset_high = sensor.get("reset_high", 2.0)
+                max_increment = sensor.get("max_increment", 0)
                 n_lags = sensor.get("n_lags", 0)
                 country = sensor.get("country", None)
 
@@ -382,10 +388,10 @@ async def main():
                 now=now.replace(second=0, microsecond=0, minute=0)
                 
 
-                print("Update at time {} Processing sensor {} incrementing {} reset_daily {} interval {} days {} export_days {} subtract {}".format(now, sensor_name, incrementing, reset_daily, interval, days, export_days, subtract_names))
+                print("Update at time {} Processing sensor {} incrementing {} max_increment {} reset_daily {} interval {} days {} export_days {} subtract {}".format(now, sensor_name, incrementing, max_increment, reset_daily, interval, days, export_days, subtract_names))
 
                 # Get the data
-                dataset, start, end = await get_history(interface, nw, sensor_name, now, incrementing, days, use_db, reset_low, reset_high)
+                dataset, start, end = await get_history(interface, nw, sensor_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high)
 
                 # Get the subtract data
                 subtract_data_list = []
@@ -393,7 +399,7 @@ async def main():
                     if isinstance(subtract_names, str):
                         subtract_names = [subtract_names]
                     for subtract_name in subtract_names:
-                        subtract_data, sub_start, sub_end = await get_history(interface, nw, subtract_name, now, incrementing, days, use_db, reset_low, reset_high)
+                        subtract_data, sub_start, sub_end = await get_history(interface, nw, subtract_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high)
                         subtract_data_list.append(subtract_data)
 
                 # Subtract the data
