@@ -27,6 +27,7 @@ sensors:
     subtract: sensor.wallbox_portal_added_energy
     days: 14
     incrementing: True
+    max_increment: 10
     reset_daily: True
     interval: 30
     units: kWh
@@ -52,6 +53,7 @@ sensors:
   - **Subtact** can be used to subtract another numerical value from the first entity, mostly used to remove things like car charging from energy data. Can also be a list of sensor names to subtract.
   - **days** Sets how many days in the past to take the history from
   - **incrementing** - When true the sensor is always incrementing (e.g. energy used), but can include resets. When False they are individual values.
+  - **max_increment** - Defines the maximum increase or decrease an incrementing sensor can have before its considered a spike and ignored
   - **reset_daily** - When true the sensor value is reset to 0 at midnight (e.g. energy per day)
   - **interval** - Sets the prediction inverval, should divide into 60 e.g. 5, 10 , 15 , 30
   - **Units** - Sets the output Unit to report in HA
