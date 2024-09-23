@@ -7,6 +7,7 @@ update_every: 30
 #    subtract: sensor.wallbox_portal_added_energy
 #    days: 14
 #    incrementing: True
+#    max_increment: 10
 #    reset_daily: True
 #    interval: 30
 #    units: kWh
