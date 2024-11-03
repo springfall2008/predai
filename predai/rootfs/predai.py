@@ -34,9 +34,21 @@ def timestr_to_datetime(timestamp):
 
 
 class HAInterface():
-    def __init__(self):
-        self.ha_key = os.environ.get("SUPERVISOR_TOKEN")
-        self.ha_url = "http://supervisor/core"
+    def __init__(self, ha_url, ha_key):
+
+        if ha_url:
+            self.ha_url = ha_url
+        else:
+            self.ha_url = "http://supervisor/core"
+
+        if ha_key:
+            self.ha_key = ha_key
+        else:
+            self.ha_key = os.environ.get("SUPERVISOR_TOKEN")
+
+        if not self.ha_key:
+            print("No Home Assistant key found, exiting")
+            exit(1)
         print("HA Interface started key {} url {}".format(self.ha_key, self.ha_url))
 
     async def get_events(self):
@@ -275,6 +287,19 @@ class Database():
         self.con = sqlite3.connect('/config/predai.db')
         self.cur = self.con.cursor()
 
+    async def cleanup_table(self, table_name, max_age):
+        """
+        Cleanup the database table by removing all entries older than max_age days.
+        """
+        now_utc = datetime.now(timezone.utc).astimezone()
+        oldest_stamp = (now_utc - timedelta(days=max_age)).strftime("%Y-%m-%d %H:%M:%S%z")
+        print("Cleanup table {} older than {}".format(table_name, oldest_stamp))
+
+        self.cur.execute(
+            "DELETE FROM {} WHERE timestamp < \"{}\"".format(table_name, oldest_stamp)
+        )
+        self.con.commit()
+
     async def create_table(self, table):
         """
         Create a table in the database by table if it does not exist.
@@ -333,7 +358,7 @@ async def print_dataset(name, dataset):
         if count > 24:
             break
 
-async def get_history(interface, nw, sensor_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high):
+async def get_history(interface, nw, sensor_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high, max_age):
     """
     Get history from HA, combine it with the database if use_db is True.
     """
@@ -346,6 +371,7 @@ async def get_history(interface, nw, sensor_name, now, incrementing, max_increme
         await db.create_table(table_name)
         prev = await db.get_history(table_name)
         dataset = await db.store_history(table_name, dataset, prev)
+        await db.cleanup_table(table_name, max_age)
         print("Stored dataset in database and retrieved full history from database length {}".format(len(dataset)))
     return dataset, start, end
     
@@ -353,7 +379,8 @@ async def main():
     """
     Main function for the prediction AI.
     """
-    interface = HAInterface()
+    config = yaml.safe_load(open("/config/predai.yaml"))
+    interface = HAInterface(config.get("ha_url", None), config.get("ha_key", None))
     while True:
         config = yaml.safe_load(open("/config/predai.yaml"))
         if not config:
@@ -378,6 +405,7 @@ async def main():
                 max_increment = sensor.get("max_increment", 0)
                 n_lags = sensor.get("n_lags", 0)
                 country = sensor.get("country", None)
+                max_age = sensor.get("max_age", 365)
 
                 if not sensor_name:
                     continue
@@ -391,7 +419,7 @@ async def main():
                 print("Update at time {} Processing sensor {} incrementing {} max_increment {} reset_daily {} interval {} days {} export_days {} subtract {}".format(now, sensor_name, incrementing, max_increment, reset_daily, interval, days, export_days, subtract_names))
 
                 # Get the data
-                dataset, start, end = await get_history(interface, nw, sensor_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high)
+                dataset, start, end = await get_history(interface, nw, sensor_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high, max_age)
 
                 # Get the subtract data
                 subtract_data_list = []
@@ -399,7 +427,7 @@ async def main():
                     if isinstance(subtract_names, str):
                         subtract_names = [subtract_names]
                     for subtract_name in subtract_names:
-                        subtract_data, sub_start, sub_end = await get_history(interface, nw, subtract_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high)
+                        subtract_data, sub_start, sub_end = await get_history(interface, nw, subtract_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high, max_age)
                         subtract_data_list.append(subtract_data)
 
                 # Subtract the data
