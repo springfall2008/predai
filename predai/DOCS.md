@@ -22,6 +22,8 @@ Example configuration
 
 ```yaml
 update_every: 30
+#ha_url: "homeassistant.local:8123"
+#ha_key: "xxxxxxxxxxxx"
 sensors:
   - name: sensor.givtcp_sa2243g277_load_energy_today_kwh
     subtract: sensor.wallbox_portal_added_energy
@@ -36,6 +38,7 @@ sensors:
     reset_low: 1.0
     reset_high: 2.0
     country: UK
+    max_age: 365
   - name: sensor.external_temperature
     days: 14
     interval: 30
@@ -46,6 +49,8 @@ sensors:
 ```
 
 **update_every** Sets the frequency of updates in minutes
+**ha_url** Set this to your Home Assistant URL (e.g. homeassistant.local:8123) you are not running as a Home Assistant addon (e.g. in Docker)
+**ha_key** Set this to your Home Assistant API key if you are not running as a Home Assistant addon (e.g. in Docker)
 
 **Sensors** This is an array of entities to predict the future on
 
