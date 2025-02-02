@@ -33,7 +33,7 @@ sensors:
     reset_daily: True
     interval: 30
     units: kWh
-    future_periods: 96
+    future_periods: 100
     database: True
     reset_low: 1.0
     reset_high: 2.0
@@ -44,7 +44,7 @@ sensors:
     interval: 30
     incrementing: False
     units: c
-    future_periods: 96
+    future_periods: 100
     country: UK
 ```
 
@@ -62,7 +62,7 @@ sensors:
   - **reset_daily** - When true the sensor value is reset to 0 at midnight (e.g. energy per day)
   - **interval** - Sets the prediction inverval, should divide into 60 e.g. 5, 10 , 15 , 30
   - **Units** - Sets the output Unit to report in HA
-  - **future_periods** - Sets the number of periods (of interval minutes) to predict into the future
+  - **future_periods** - Sets the number of periods (of interval minutes) to predict into the future, 100 is recommended for Predbat use to cover 48 hours + time until the next PredAI run.
   - **database** - When True (default) all data is stored in a sqllite3 database in the addon directory, this will keep a full history beyond what HA keeps and use
 that history for training. You can browse the data using an SQL Lite viewer on your computer.
   - **export_days** - Sets how many days of history to include in the HA entities that are created, recommended values are 7-14. The default is **days**
