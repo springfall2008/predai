@@ -1,4 +1,4 @@
 appdaemon
 pandas
 torch
-neuralprophet==0.8.0
+neuralprophet==1.0.0rc10
