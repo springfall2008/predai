@@ -1,4 +1,1 @@
-appdaemon
-pandas
-torch
-neuralprophet==1.0.0rc10
+neuralprophet==0.9.0
