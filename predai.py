@@ -1,37 +1,35 @@
 #!/usr/bin/env python3
 """
-PredAI — generic, config‑driven forecasting service for Home Assistant.
+PredAI (fork) — config‑driven multi‑horizon forecasting for Home Assistant.
 
-Features
---------
-* Configurable roles (incrementing energy, temperature level, etc.)
-* Transform pipeline (cumulative→interval, resample, clipping, log)
-* Covariates (future + lagged) resolved from HA sensors or derived
-* NeuralProphet multi‑horizon forecasts (+2h/+8h/+12h … configurable)
-* Publishes interval, cumulative‑from‑now, daily‑cumulative, and horizon scalars
-* SQLite history cache (optional) to persist training data across restarts
-* Async aiohttp HA interface with masked tokens
-* Structured logging
+Key features:
+* Configurable sensor roles (energy counters, temperature, Mixergy immersion demand, etc.).
+* Automatic power→energy integration for non‑cumulative power sensors (mean power -> kWh/interval).
+* Covariate alias + scaling from YAML `covariates:` section.
+* Interval, cumulative, daily_cum, and horizon (+2h/+8h/+12h or custom) forecast publishing.
+* Async Home Assistant API via aiohttp.
+* SQLite history cache.
+* Config hot‑reload each cycle.
 
-Author: Adapted collaboratively with ChatGPT (British spelling).
+British spelling used in comments.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import os
 import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 import yaml
 
+# NeuralProphet
 try:
     from neuralprophet import NeuralProphet, set_log_level as np_set_log_level
 except Exception as e:  # pragma: no cover
@@ -68,30 +66,21 @@ SAFE_TBL_RE = re.compile(r"^[A-Za-z0-9_]+$")
 logger = logging.getLogger("predai")
 if not logger.handlers:
     h = logging.StreamHandler()
-    fmt = logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S")
     h.setFormatter(fmt)
     logger.addHandler(h)
 logger.setLevel(logging.INFO)
 
 # --------------------------------------------------------------------------- #
-# Utility: parse HA timestamps
+# Utility: timestamps
 # --------------------------------------------------------------------------- #
 
 def timestr_to_datetime(timestamp: str) -> Optional[datetime]:
-    """
-    Convert a Home Assistant timestamp string to a timezone‑aware datetime.
-    HA timestamps usually look like '2025-01-01T12:00:00+00:00' or with .ms.
-    Returns None on failure.
-    """
     if not timestamp:
         return None
     for fmt in (TIME_FORMAT_HA, TIME_FORMAT_HA_DOT):
         try:
             dt = datetime.strptime(timestamp, fmt)
-            # Keep tzinfo as provided; normalise seconds to 0
             return dt.replace(second=0, microsecond=0)
         except ValueError:
             continue
@@ -110,9 +99,8 @@ def ensure_utc(dt: datetime) -> datetime:
 
 @dataclass
 class RoleCfg:
-    """Reusable defaults for a group of sensors."""
     target_transform: str = "interval"      # interval|level|cumulative
-    aggregation: str = "sum"                # resample how: sum|mean|last
+    aggregation: str = "sum"                # sum|mean|last
     publish_state_class: str = "measurement"
     model_backend: str = "neuralprophet"
     n_lags: int = 8
@@ -126,7 +114,7 @@ class ResetDetectionCfg:
     enabled: bool = False
     low: float = 1.0
     high: float = 2.0
-    hard_reset_value: Optional[float] = None  # if value==0 etc
+    hard_reset_value: Optional[float] = None
 
 
 @dataclass
@@ -134,41 +122,34 @@ class SensorCfg:
     name: str
     role: str
     units: str = ""
+    output_units: Optional[str] = None        # override publish units (e.g., W in, kWh out)
     days_hist: int = 7
     export_days: Optional[int] = None
 
-    # Source & transforms
     source_is_cumulative: bool = False
-    train_target: str = "interval"  # interval|level|cumulative
-    aggregation: Optional[str] = None  # override role
+    train_target: str = "interval"            # interval|level|cumulative
+    aggregation: Optional[str] = None         # resample override
     log_transform: bool = False
 
     reset_detection: ResetDetectionCfg = field(default_factory=ResetDetectionCfg)
 
-    # Publishing
     publish_interval: bool = True
     publish_cumulative: bool = True
     publish_daily_cumulative: bool = True
 
-    # Covariates
     covariates_future: List[str] = field(default_factory=list)
     covariates_lagged: List[str] = field(default_factory=list)
 
-    # Model overrides
     n_lags: Optional[int] = None
     seasonality_reg: Optional[float] = None
     seasonality_mode: Optional[str] = None
     learning_rate: Optional[float] = None
     country: Optional[str] = None
 
-    # DB & maintenance
     database: bool = True
     max_age: int = 365
 
-    # Plot toggle
     plot: bool = False
-
-    # Cascade outputs flags (dict of names)
     cascade_outputs: Dict[str, bool] = field(default_factory=dict)
 
     def effective_aggregation(self, role_cfg: RoleCfg) -> str:
@@ -197,15 +178,15 @@ class PredAIConfig:
     roles: Dict[str, RoleCfg] = field(default_factory=dict)
     sensors: List[SensorCfg] = field(default_factory=list)
     timezone_name: str = "Europe/London"
+    cov_map: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def tz(self):
-        # Use zoneinfo if available; fallback to UTC
         try:
             from zoneinfo import ZoneInfo
             return ZoneInfo(self.timezone_name)
         except Exception:
-            logger.warning("Could not load timezone %s; using UTC.", self.timezone_name)
+            logger.warning("Could not load timezone %s; falling back to UTC.", self.timezone_name)
             return timezone.utc
 
 
@@ -222,15 +203,13 @@ def _load_role(name: str, d: Dict[str, Any]) -> RoleCfg:
         n_lags=d.get("model", {}).get("n_lags", 8),
         seasonality_reg=d.get("model", {}).get("seasonality_reg", 5.0),
         seasonality_mode=d.get("model", {}).get("seasonality_mode", "additive"),
-        learning_rate=d.get("model", {}).get("learning_rate", None),
+        learning_rate=d.get("model", {}).get("learning_rate"),
     )
 
 
 def _load_sensor(dflt: Dict[str, Any], d: Dict[str, Any]) -> SensorCfg:
-    # merge defaults shallowly
     merged = dict(dflt)
     merged.update(d)
-    # reset_detection sub‑map
     rd_map = merged.get("reset_detection", {})
     rd = ResetDetectionCfg(
         enabled=rd_map.get("enabled", False),
@@ -242,6 +221,7 @@ def _load_sensor(dflt: Dict[str, Any], d: Dict[str, Any]) -> SensorCfg:
         name=merged["name"],
         role=merged.get("role", "incrementing_energy"),
         units=merged.get("units", ""),
+        output_units=merged.get("output_units"),
         days_hist=merged.get("days", merged.get("days_hist", 7)),
         export_days=merged.get("export_days"),
         source_is_cumulative=merged.get("source_is_cumulative", False),
@@ -276,15 +256,14 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> PredAIConfig:
     dflt = raw.get("defaults", {})
     publish_prefix = dflt.get("publish_prefix", DEFAULT_PUBLISH_PREFIX)
 
-    # Roles
     roles_raw = raw.get("roles", {}) or {}
     roles = {k: _load_role(k, v) for k, v in roles_raw.items()}
 
-    # Sensors
     sensors_raw = raw.get("sensors", []) or []
     sensors: List[SensorCfg] = []
     for s in sensors_raw:
-        sensors.append(_load_sensor(dflt, s))
+        s_clean = {k: v for k, v in s.items() if k != "roles"}  # ignore stray nested roles
+        sensors.append(_load_sensor(dflt, s_clean))
 
     cfg = PredAIConfig(
         update_every=raw.get("update_every", 30),
@@ -295,12 +274,13 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> PredAIConfig:
         roles=roles,
         sensors=sensors,
         timezone_name=raw.get("timezone", "Europe/London"),
+        cov_map=raw.get("covariates", {}) or {},
     )
     return cfg
 
 
 # --------------------------------------------------------------------------- #
-# Home Assistant Interface (aiohttp)
+# Home Assistant Interface
 # --------------------------------------------------------------------------- #
 
 class HAInterface:
@@ -344,13 +324,7 @@ class HAInterface:
             logger.error("HA API error %s %s: %s", method, endpoint, e)
             return None
 
-    async def get_events(self):
-        return await self.api_call("GET", "/api/events")
-
     async def get_history(self, sensor: str, start: datetime, end: datetime) -> Tuple[List[dict], Optional[datetime], Optional[datetime]]:
-        """
-        Returns (raw_list, start_dt, end_dt) for the sensor.
-        """
         params = {
             "filter_entity_id": sensor,
             "end_time": end.strftime(TIME_FORMAT_HA),
@@ -360,9 +334,7 @@ class HAInterface:
         if not res:
             logger.warning("No history for %s", sensor)
             return [], None, None
-        # HA returns list-of-lists: [[{...}, {...}], ...]
         arr = res[0] if isinstance(res, list) and res else []
-        # detect start/end from list
         try:
             st = timestr_to_datetime(arr[0]["last_updated"]) if arr else None
             en = timestr_to_datetime(arr[-1]["last_updated"]) if arr else None
@@ -447,17 +419,13 @@ class HistoryDB:
 
 
 # --------------------------------------------------------------------------- #
-# Transform Utilities
+# Transform utilities
 # --------------------------------------------------------------------------- #
 
 def normalise_history(raw: List[dict]) -> pd.DataFrame:
-    """
-    HA history -> DataFrame[ds,value]
-    """
     if not raw:
         return pd.DataFrame(columns=["ds", "value"])
     df = pd.DataFrame(raw)
-    # HA keys: 'last_updated', 'state'
     df["ds"] = pd.to_datetime(df["last_updated"], utc=True, errors="coerce")
     df["value"] = pd.to_numeric(df["state"], errors="coerce")
     df = df.dropna(subset=["ds", "value"]).sort_values("ds")
@@ -479,31 +447,22 @@ def resample_sensor(df: pd.DataFrame, freq: str, how: str) -> pd.DataFrame:
 
 
 def cumulative_to_interval(df: pd.DataFrame, reset_cfg: ResetDetectionCfg) -> pd.DataFrame:
-    """
-    Convert cumulative running total readings to per‑interval deltas.
-    Simple reset handling: negative deltas -> NaN; if enabled, allow low/high heuristics.
-    """
     if df.empty:
         df["y"] = []
         return df
     df = df.sort_values("ds").reset_index(drop=True)
-    val = df["value"].to_numpy()
-    delta = np.diff(val, prepend=val[0])
-    delta[0] = np.nan  # first unknown
-    # naive negative -> NaN
+    v = df["value"].to_numpy()
+    delta = np.diff(v, prepend=v[0])
+    delta[0] = np.nan
     neg_mask = delta < 0
     if reset_cfg.enabled:
-        # if a large negative jump where prev>high and now<low treat as reset -> use current reading
         if reset_cfg.hard_reset_value is not None:
-            reset_mask = np.isclose(val, reset_cfg.hard_reset_value)
-            # after reset, delta=val (start new)
+            reset_mask = np.isclose(v, reset_cfg.hard_reset_value)
             for i in np.where(reset_mask)[0]:
-                delta[i] = val[i]
-        # fall back to clipping
+                delta[i] = v[i]
     delta[neg_mask] = np.nan
-    # fill NaN by 0 (conservative) then clip
     delta = np.nan_to_num(delta, nan=0.0)
-    delta = np.clip(delta, a_min=0.0, a_max=None)
+    delta = np.clip(delta, 0.0, None)
     df["y"] = delta
     return df
 
@@ -515,39 +474,63 @@ def apply_log_transform(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def invert_log_transform(series: pd.Series, applied: bool) -> pd.Series:
+def invert_log_transform(arr: np.ndarray, applied: bool) -> np.ndarray:
     if not applied:
-        return series
-    return np.expm1(series)
+        return arr
+    return np.expm1(arr)
 
 
 # --------------------------------------------------------------------------- #
-# Covariate Resolver (basic)
+# CovariateResolver
 # --------------------------------------------------------------------------- #
 
 class CovariateResolver:
     """
-    Minimal resolver: fetch current HA state and historical history;
-    for future we forward‑hold the last observed value.
-    Extend for tariff schedules, weather forecasts, etc.
+    Basic covariate resolution with alias & scale support.
+
+    Example YAML:
+      covariates:
+        mixergy_charge:
+          entity: sensor.current_charge
+          scale: 0.01
+        outdoor_temp_forecast: sensor.external_temperature
     """
 
-    def __init__(self, iface: HAInterface):
+    def __init__(self, iface: HAInterface, cov_map: Dict[str, Any]):
         self.iface = iface
+        self.map = cov_map
 
-    async def get_hist_series(self, entity_id: str, start: datetime, end: datetime, freq: str, how: str) -> pd.Series:
+    def _resolve(self, name: str) -> dict:
+        val = self.map.get(name, name)
+        if isinstance(val, str):
+            return {"entity": val, "scale": 1.0}
+        if isinstance(val, dict):
+            return {
+                "entity": val.get("entity", name),
+                "scale": val.get("scale", 1.0),
+                "attr": val.get("attr"),
+                "forecast_attr": val.get("forecast_attr"),
+            }
+        return {"entity": str(val), "scale": 1.0}
+
+    async def get_hist_series(self, cov_name: str, start: datetime, end: datetime, freq: str, how: str) -> pd.Series:
+        meta = self._resolve(cov_name)
+        entity_id = meta["entity"]
         raw, _, _ = await self.iface.get_history(entity_id, start, end)
         df = normalise_history(raw)
         if df.empty:
             return pd.Series([], dtype=float)
-        df = resample_sensor(df, freq, how)
+        # never sum temps/% etc.; if how=='sum' use mean
+        df = resample_sensor(df, freq, "mean" if how == "sum" else how)
+        df["value"] = df["value"] * meta.get("scale", 1.0)
         return df.set_index("ds")["value"]
 
-    async def get_future_series(self, entity_id: str, future_index: pd.DatetimeIndex, default: float = 0.0) -> pd.Series:
-        # simple: fetch current state & hold flat
+    async def get_future_series(self, cov_name: str, future_index: pd.DatetimeIndex, default: float = 0.0) -> pd.Series:
+        meta = self._resolve(cov_name)
+        entity_id = meta["entity"]
         val = await self.iface.get_state(entity_id)
         try:
-            v = float(val)
+            v = float(val) * meta.get("scale", 1.0)
         except (TypeError, ValueError):
             v = default
         return pd.Series(v, index=future_index)
@@ -567,8 +550,6 @@ class NPBackend:
                  country: Optional[str] = None):
         if NeuralProphet is None:
             raise RuntimeError(f"NeuralProphet import failed: {_NP_IMPORT_ERROR}")
-        self.n_lags = n_lags
-        self.n_forecasts = n_forecasts
         kw = dict(
             n_lags=n_lags,
             n_forecasts=n_forecasts,
@@ -600,22 +581,17 @@ class NPBackend:
 
 
 # --------------------------------------------------------------------------- #
-# Horizon helpers
+# Horizon helpers & publishing
 # --------------------------------------------------------------------------- #
 
 def horizon_steps(minutes_ahead: int, interval_min: int) -> int:
-    return int(minutes_ahead // interval_min)
+    return max(1, minutes_ahead // interval_min)
 
 
 def horizon_agg(yhat_interval: Sequence[float], interval_min: int, minutes_ahead: int) -> float:
-    steps = horizon_steps(minutes_ahead, interval_min)
-    steps = min(max(steps, 1), len(yhat_interval))
+    steps = min(horizon_steps(minutes_ahead, interval_min), len(yhat_interval))
     return float(np.nansum(yhat_interval[:steps]))
 
-
-# --------------------------------------------------------------------------- #
-# Publishing helpers
-# --------------------------------------------------------------------------- #
 
 def make_entity_name(prefix: str, base: str, suffix: Optional[str] = None) -> str:
     base = base.replace(".", "_")
@@ -633,9 +609,6 @@ def dict_from_series(index: Sequence[datetime], values: Sequence[float], tz: tim
 
 
 def daily_cumulative_series(index: Sequence[datetime], values: Sequence[float], tz: timezone) -> Dict[str, float]:
-    """
-    Resets at local midnight each day.
-    """
     cum = 0.0
     out: Dict[str, float] = {}
     current_day = None
@@ -657,25 +630,18 @@ async def publish_forecasts(sensor: SensorCfg,
                             yhat_interval: Sequence[float],
                             yhat_level: Optional[Sequence[float]] = None,
                             metrics: Optional[dict] = None):
-    """
-    Publish all forecast entities for one sensor.
-    """
     tz = cfg.tz
     prefix = cfg.publish_prefix
 
-    # Convert to arrays
     yhat_interval = np.array(yhat_interval, dtype=float)
+    yhat_interval = np.clip(yhat_interval, 0, None)  # no negatives
 
-    # cumulative‑from‑now
-    cum_from_now = np.cumsum(np.clip(yhat_interval, 0, None))
-
-    # daily
+    cum_from_now = np.cumsum(yhat_interval)
     daily_cum = daily_cumulative_series(ds_future, yhat_interval, tz)
 
     ser_interval = dict_from_series(ds_future, yhat_interval, tz)
     ser_cum = dict_from_series(ds_future, cum_from_now, tz)
 
-    # Model meta
     model_ts_iso = datetime.now(timezone.utc).astimezone(tz).isoformat()
     meta = {
         "model_ts": model_ts_iso,
@@ -684,38 +650,36 @@ async def publish_forecasts(sensor: SensorCfg,
         "mae_recent": metrics.get("mae_recent") if metrics else None,
     }
 
-    # per‑interval entity
+    publish_units = sensor.output_units or sensor.units
+
     if sensor.publish_interval:
         ent_interval = make_entity_name(prefix, sensor.name, "interval")
         await iface.set_state(
             ent_interval,
             state=round(float(yhat_interval[0]) if len(yhat_interval) else 0.0, 3),
             attributes={
-                "unit_of_measurement": sensor.units,
+                "unit_of_measurement": publish_units,
                 "state_class": "measurement",
                 "forecast_series": ser_interval,
                 **meta,
             },
         )
 
-    # cumulative‑from‑now
     if sensor.publish_cumulative:
         ent_cum = make_entity_name(prefix, sensor.name, "cum")
         await iface.set_state(
             ent_cum,
             state=round(float(cum_from_now[-1]) if len(cum_from_now) else 0.0, 3),
             attributes={
-                "unit_of_measurement": sensor.units,
+                "unit_of_measurement": publish_units,
                 "state_class": "measurement",
                 "forecast_series": ser_cum,
                 **meta,
             },
         )
 
-    # daily‑cumulative
     if sensor.publish_daily_cumulative:
         ent_daily = make_entity_name(prefix, sensor.name, "daily_cum")
-        # pick last key for today's date if present; else last overall
         today_str = datetime.now(tz).strftime("%Y-%m-%d")
         todays = {k: v for k, v in daily_cum.items() if k.startswith(today_str)}
         state_val = list(todays.values())[-1] if todays else list(daily_cum.values())[-1]
@@ -723,7 +687,7 @@ async def publish_forecasts(sensor: SensorCfg,
             ent_daily,
             state=round(float(state_val), 3),
             attributes={
-                "unit_of_measurement": sensor.units,
+                "unit_of_measurement": publish_units,
                 "state_class": "measurement",
                 "forecast_series": daily_cum,
                 **meta,
@@ -735,18 +699,16 @@ async def publish_forecasts(sensor: SensorCfg,
         suffix = f"pred_{m//60}h"
         ent_h = make_entity_name(prefix, sensor.name, suffix)
         if sensor.train_target == "level":  # e.g., temperature
-            # choose step value at horizon (or last available)
-            steps = horizon_steps(m, cfg.common_interval)
-            steps = min(max(steps, 1), len(yhat_level) if yhat_level is not None else len(yhat_interval))
-            val = (yhat_level or yhat_interval)[steps - 1]
+            arr = np.array(yhat_level if yhat_level is not None else yhat_interval)
+            steps = min(horizon_steps(m, cfg.common_interval), len(arr))
+            val = arr[steps - 1]
         else:
-            # sum to horizon
             val = horizon_agg(yhat_interval, cfg.common_interval, m)
         await iface.set_state(
             ent_h,
             state=round(float(val), 3),
             attributes={
-                "unit_of_measurement": sensor.units,
+                "unit_of_measurement": publish_units,
                 "state_class": "measurement",
                 "generated_from": make_entity_name(prefix, sensor.name, "interval"),
                 **meta,
@@ -764,19 +726,12 @@ async def run_sensor_job(sensor: SensorCfg,
                          iface: HAInterface,
                          cov_res: CovariateResolver,
                          db: Optional[HistoryDB]) -> None:
-    """
-    Fetch history, prepare data, train model, forecast & publish.
-    """
-
     interval_min = cfg.common_interval
     freq = f"{interval_min}min"
     tz = cfg.tz
 
-    now = datetime.now(timezone.utc).astimezone(tz).replace(second=0, microsecond=0, minute=(now := datetime.now(timezone.utc).astimezone(tz).minute // interval_min * interval_min))
-    # Actually the above got messy; re‑compute cleanly:
-    now = datetime.now(timezone.utc).astimezone(tz)
-    now = now.replace(second=0, microsecond=0)
-    # snap minutes down to interval start
+    # Round now to interval boundary
+    now = datetime.now(timezone.utc).astimezone(tz).replace(second=0, microsecond=0)
     minute_floor = (now.minute // interval_min) * interval_min
     now = now.replace(minute=minute_floor)
 
@@ -791,14 +746,11 @@ async def run_sensor_job(sensor: SensorCfg,
     if sensor.database and db:
         tname = sensor.name.replace(".", "_")
         prev = db.get_history(tname)
-        # unify columns
         if not df.empty:
-            # we store y; so temporarily create y from value to store; replaced soon
             tmp = df.rename(columns={"value": "y"})[["ds", "y"]]
             prev = db.store_history(tname, tmp, prev)
         oldest = now - timedelta(days=sensor.max_age)
         db.cleanup_table(tname, oldest)
-        # Use full DB history as df if it has points
         if not prev.empty:
             prev = prev.sort_values("ds")
             prev = prev.rename(columns={"y": "value"})
@@ -812,13 +764,23 @@ async def run_sensor_job(sensor: SensorCfg,
     agg = sensor.effective_aggregation(role_cfg)
     df = resample_sensor(df, freq, agg)
 
+    # Power->energy (heuristic)
+    if (not sensor.source_is_cumulative) and sensor.train_target == "interval":
+        units_lower = (sensor.units or "").lower()
+        if "w" in units_lower:  # W or kW
+            if df["value"].max() > 50:  # assume W
+                df["value"] = df["value"] / 1000.0
+            df["value"] = df["value"] * (interval_min / 60.0)  # kWh per bucket
+            if not sensor.output_units:
+                sensor.output_units = "kWh"
+
     # Transform to modelling target
-    if sensor.source_is_cumulative or sensor.train_target == "interval":
+    if sensor.source_is_cumulative:
         df = cumulative_to_interval(df, sensor.reset_detection)
     else:
         df = df.rename(columns={"value": "y"})
 
-    # Clip & clean
+    # Clean
     df["y"] = pd.to_numeric(df["y"], errors="coerce").fillna(0.0)
     df = df.dropna(subset=["y"])
 
@@ -827,18 +789,14 @@ async def run_sensor_job(sensor: SensorCfg,
         df = apply_log_transform(df)
         log_applied = True
 
-    # Minimal history check
     if len(df) < role_cfg.n_lags + 5:
         logger.warning("Sensor %s: insufficient history (%s rows); skipping model.", sensor.name, len(df))
         return
 
-    # Build training frame for NP (must include ds,y and regressor columns)
+    # Training frame
     train_df = df[["ds", "y"]].copy()
 
-    # Covariates historical & declare to model
-    cov_cols: List[str] = []
     if role_cfg.model_backend == "neuralprophet":
-        # create backend
         steps = max(horizon_steps(m, interval_min) for m in cfg.horizons)
         backend = NPBackend(
             n_lags=sensor.effective_n_lags(role_cfg),
@@ -854,62 +812,48 @@ async def run_sensor_job(sensor: SensorCfg,
             s = await cov_res.get_hist_series(cov, start_hist, end_hist, freq, agg)
             if not s.empty:
                 train_df = train_df.merge(s.rename(cov), left_on="ds", right_index=True, how="left")
-                cov_cols.append(cov)
                 backend.add_lagged_regressor(cov, n_lags=sensor.effective_n_lags(role_cfg))
+            else:
+                logger.debug("Covariate %s lagged: no history.", cov)
 
         # future covariates
         for cov in sensor.covariates_future:
-            # For training we use historical series; for future we'll append after
             s = await cov_res.get_hist_series(cov, start_hist, end_hist, freq, agg)
             if not s.empty:
                 train_df = train_df.merge(s.rename(cov), left_on="ds", right_index=True, how="left")
             else:
                 train_df[cov] = np.nan
-            cov_cols.append(cov)
             backend.add_future_regressor(cov, mode="additive")
 
         # Fit
         backend.fit(train_df, freq=freq)
 
-        # Future dataframe
-        # Make base future frame from last training ds
+        # Future frame
         df_future = backend.make_future(train_df, periods=steps)
-
-        # Fill future covariates
         fut_mask = df_future["ds"] > train_df["ds"].max()
         if fut_mask.any():
             fut_idx = pd.to_datetime(df_future.loc[fut_mask, "ds"], utc=True)
             for cov in sensor.covariates_future:
                 fut_s = await cov_res.get_future_series(cov, fut_idx, default=0.0)
-                # assign
                 df_future.loc[fut_mask, cov] = fut_s.to_numpy()
-
-            # lagged handled internally by NP
 
         # Predict
         fcst = backend.predict(df_future)
 
-        # Extract interval forecast steps
-        # NeuralProphet returns yhat1..yhatN columns
-        yhat_cols = [f"yhat{i}" for i in range(1, steps + 1)]
-        yhat_int = fcst.loc[fcst["ds"] == train_df["ds"].max(), yhat_cols].values.flatten()
-        if sensor.log_transform:
-            yhat_int = invert_log_transform(pd.Series(yhat_int), True).to_numpy()
-
-        # Build ds_future list (forecast horizon timestamps)
+        # Extract forecast row corresponding to last training timestamp
         base = train_df["ds"].max()
+        row_mask = fcst["ds"] == base
+        if not row_mask.any():  # fallback: last row
+            row_mask = fcst.index == (len(fcst) - 1)
+        yhat_cols = [f"yhat{i}" for i in range(1, steps + 1)]
+        yhat_int = fcst.loc[row_mask, yhat_cols].values.flatten()
+
+        if log_applied:
+            yhat_int = invert_log_transform(yhat_int, True)
+
         ds_future = [pd.to_datetime(base) + timedelta(minutes=interval_min * i) for i in range(1, steps + 1)]
 
-        # Simple metrics: training row count; naive recent MAE vs last step
-        metrics = {
-            "training_rows": int(len(train_df)),
-        }
-        try:
-            # Compare last few actuals to NP backcast yhat1? We'll just produce NA for now.
-            metrics["mae_recent"] = None
-        except Exception:  # pragma: no cover
-            metrics["mae_recent"] = None
-
+        metrics = {"training_rows": int(len(train_df)), "mae_recent": None}
         await publish_forecasts(sensor, role_cfg, iface, cfg, ds_future, yhat_int, metrics=metrics)
 
     else:
@@ -921,13 +865,9 @@ async def run_sensor_job(sensor: SensorCfg,
 # --------------------------------------------------------------------------- #
 
 async def predai_main():
-    """
-    Main async loop: load config; update sensors; sleep; repeat.
-    """
     cfg = load_config(DEFAULT_CONFIG_PATH)
 
-    # HA credentials from config or env
-    # We expect top‑level keys ha_url, ha_key optionally
+    # read raw for HA creds & initial cov_map
     try:
         with open(DEFAULT_CONFIG_PATH, "r") as f:
             raw = yaml.safe_load(f) or {}
@@ -937,30 +877,24 @@ async def predai_main():
     ha_key = raw.get("ha_key") or os.environ.get("SUPERVISOR_TOKEN")
 
     iface = HAInterface(ha_url, ha_key)
-    cov_res = CovariateResolver(iface)
+    cov_res = CovariateResolver(iface, cfg.cov_map)
     db = HistoryDB(DEFAULT_DB_PATH)
-
-    update_every = cfg.update_every
 
     try:
         while True:
             logger.info("PredAI cycle start.")
-            # reload config each loop to honour edits
+            # hot-reload config
             cfg = load_config(DEFAULT_CONFIG_PATH)
+            # refresh covariate map
+            cov_res.map = cfg.cov_map
 
-            # per‑sensor tasks
-            tasks = []
             for s in cfg.sensors:
                 role_cfg = cfg.roles.get(s.role, RoleCfg())
-                tasks.append(run_sensor_job(s, role_cfg, cfg, iface, cov_res, db))
-            # run sequentially to avoid HA rate limits; gather if desired
-            for t in tasks:
                 try:
-                    await t
+                    await run_sensor_job(s, role_cfg, cfg, iface, cov_res, db)
                 except Exception as e:
-                    logger.exception("Sensor job failed: %s", e)
+                    logger.exception("Sensor job failed for %s: %s", s.name, e)
 
-            # mark last run heartbeat
             now_str = datetime.now(timezone.utc).isoformat()
             await iface.set_state(
                 "sensor.predai_last_run",
@@ -968,9 +902,9 @@ async def predai_main():
                 attributes={"unit_of_measurement": "time"},
             )
 
-            logger.info("PredAI sleeping %s minutes.", update_every)
-            # Sleep in 60s chunks; break if heartbeat disappears (HA restart)
-            for _ in range(update_every):
+            logger.info("PredAI sleeping %s minutes.", cfg.update_every)
+            # Sleep minute chunks; break early if heartbeat lost
+            for _ in range(cfg.update_every):
                 last_run = await iface.get_state("sensor.predai_last_run")
                 if last_run is None:
                     logger.warning("PredAI heartbeat lost; restarting early.")
