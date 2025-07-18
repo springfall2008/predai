@@ -1,17 +1,59 @@
-# Home Assistant provides the correct Alpine base for every CPU arch
+#install python en pip
 ARG BUILD_FROM
+ARG BUILD_VERSION
 FROM $BUILD_FROM
 
-# Install Python and pip
-RUN apk add --no-cache python3 py3-pip
+# Set shell
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Copy runtime files
-COPY run.sh /run.sh
-COPY predai_main.py /opt/predai/predai_main.py
-COPY requirements.txt /tmp/requirements.txt
+RUN apt-get update
+RUN apt-get upgrade -y
+RUN apt-get dist-upgrade -y
+RUN apt-get install -y python3
+RUN apt-get install -y python3-pip
+RUN apt-get install -y python3.11-venv
 
-RUN chmod a+x /run.sh \
- && pip3 install --no-cache-dir -r /tmp/requirements.txt
+WORKDIR /app_data
+COPY rootfs /
 
-WORKDIR /opt/predai
-CMD [ "/run.sh" ]
+COPY requirements.txt /tmp/
+RUN pip install -r /tmp/requirements.txt
+
+# Start app
+RUN chmod a+x /run.sh
+
+#ENV VIRTUAL_ENV=/root/venv/day_ahead
+#RUN python3 -m venv $VIRTUAL_ENV
+#ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+#COPY requirements.txt /tmp/
+#RUN pip3 install -r /tmp/requirements.txt
+
+ARG BUILD_ARCH
+ARG BUILD_DATE
+ARG BUILD_DESCRIPTION
+ARG BUILD_NAME
+ARG BUILD_REF
+ARG BUILD_REPOSITORY
+ARG BUILD_VERSION
+LABEL \
+    io.hass.name="${BUILD_NAME}" \
+    io.hass.description="${BUILD_DESCRIPTION}" \
+    io.hass.arch="${BUILD_ARCH}" \
+    io.hass.type="addon" \
+    io.hass.version=${BUILD_VERSION} \
+    maintainer="psweens (https://github.com/psweens/predai)" \
+    org.opencontainers.image.title="${BUILD_NAME}" \
+    org.opencontainers.image.description="${BUILD_DESCRIPTION}" \
+    org.opencontainers.image.vendor="Springfall2008" \
+    org.opencontainers.image.authors="springfall2008 (https://github.com/springfall2008)" \
+    org.opencontainers.image.licenses="MIT" \
+    org.opencontainers.image.url="https://github.com/springfall2008" \
+    org.opencontainers.image.source="https://github.com/${BUILD_REPOSITORY}" \
+    org.opencontainers.image.documentation="https://github.com/${BUILD_REPOSITORY}/blob/main/README.md" \
+    org.opencontainers.image.created=${BUILD_DATE} \
+    org.opencontainers.image.revision=${BUILD_REF} \
+    org.opencontainers.image.version=${BUILD_VERSION}
+
+# CMD ["python3", "/startup.py"]
+#CMD [ "/run.sh" ]
