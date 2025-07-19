@@ -50,8 +50,8 @@ TIMEOUT = 240
 TIME_FORMAT_HA = "%Y-%m-%dT%H:%M:%S%z"
 TIME_FORMAT_HA_DOT = "%Y-%m-%dT%H:%M:%S.%f%z"
 
-DEFAULT_CONFIG_PATH = "predai.yaml"
-DEFAULT_DB_PATH = "predai.db"
+DEFAULT_CONFIG_PATH = "/config/predai.yaml"
+DEFAULT_DB_PATH = "/config/predai.db"
 
 DEFAULT_PUBLISH_PREFIX = "predai_"
 DEFAULT_INTERVAL_MIN = 30
