@@ -826,6 +826,9 @@ async def run_sensor_job(sensor: SensorCfg,
                 train_df[cov] = np.nan
             backend.add_future_regressor(cov, mode="additive")
 
+        train_df = train_df.ffill().bfill()   # ADD – fill internal NaNs
+        train_df = train_df.dropna()          # ADD – drop any rows still invalid
+        
         # Fit
         backend.fit(train_df, freq=freq)
 
