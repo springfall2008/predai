@@ -407,7 +407,7 @@ class HistoryDB:
             timestamp_s = timestamp.isoformat()
             value = float(row["y"])
             if timestamp_s not in prev_values:
-                self.cur.execute(f"INSERT INTO {t} (timestamp, value) VALUES (?, ?)", (timestamp_s, value))
+                self.cur.execute(f"INSERT OR IGNORE INTO {t} (timestamp, value) VALUES (?, ?)", (timestamp_s, value))
                 prev_values.add(timestamp_s)
                 prev.loc[len(prev)] = {"ds": timestamp, "y": value}
                 added += 1
