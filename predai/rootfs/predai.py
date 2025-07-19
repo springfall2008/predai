@@ -24,6 +24,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from pandas.api.types import is_numeric_dtype
+
 
 import numpy as np
 import pandas as pd
@@ -834,12 +836,29 @@ async def run_sensor_job(sensor: SensorCfg,
 
         # Future frame
         df_future = backend.make_future(train_df, periods=steps)
-        fut_mask = df_future["ds"] > train_df["ds"].max()
-        if fut_mask.any():
-            fut_idx = pd.to_datetime(df_future.loc[fut_mask, "ds"], utc=True)
-            for cov in sensor.covariates_future:
-                fut_s = await cov_res.get_future_series(cov, fut_idx, default=0.0)
+        # ------------------------------------------------------------------
+        # PATCH: ensure every future regressor column is fully populated
+        # ------------------------------------------------------------------
+        base_ts = train_df["ds"].max()
+        fut_mask = df_future["ds"] > base_ts
+        for cov in sensor.covariates_future:
+            # 1. Try user‑supplied future series
+            if fut_mask.any():
+                fut_idx = pd.to_datetime(df_future.loc[fut_mask, "ds"], utc=True)
+                fut_s = await cov_res.get_future_series(cov, fut_idx, default=np.nan)
                 df_future.loc[fut_mask, cov] = fut_s.to_numpy()
+        
+            # 2. If still missing, hold‑flat last historic numeric value
+            if df_future[cov].isna().any():
+                last_val = train_df[cov].dropna()
+                if not last_val.empty and is_numeric_dtype(last_val):
+                    fill_val = float(last_val.iloc[-1])
+                    df_future.loc[fut_mask, cov] = df_future.loc[fut_mask, cov].fillna(fill_val)
+                else:
+                    # fall‑back: zero
+                    df_future[cov] = df_future[cov].fillna(0.0)
+        # ------------------------------------------------------------------
+
 
         # Predict
         fcst = backend.predict(df_future)
