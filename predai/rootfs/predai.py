@@ -554,7 +554,7 @@ class NPBackend:
             n_forecasts=n_forecasts,
             seasonality_mode=seasonality_mode,
             seasonality_reg=seasonality_reg,
-            #drop_missing=True
+            drop_missing=True
         )
         if learning_rate is not None:
             kw["learning_rate"] = learning_rate
@@ -810,6 +810,26 @@ async def run_sensor_job(sensor: SensorCfg,
 
     # Training frame
     train_df = df[["ds", "y"]].copy()
+                             
+    # -----------------------------------------------------------------
+    # Ensure a continuous timeline at <freq>, fill gaps so NP keeps rows
+    # -----------------------------------------------------------------
+    full_idx = pd.date_range(
+        start=train_df["ds"].min(),
+        end=train_df["ds"].max(),
+        freq=freq,
+        tz="UTC",          # keep UTC; NP will re-localise if needed
+    )
+    train_df = (
+        train_df.set_index("ds")
+                .reindex(full_idx)         # insert missing rows
+                .ffill()                   # forward‑fill gaps
+                .bfill()                   # backward‑fill leading NaNs
+                .fillna(0.0)               # any stragglers → 0.0
+                .reset_index()
+                .rename(columns={"index": "ds"})
+    )
+
 
     # ------------------------------------------------------------
     # DEBUG: log basic frame stats before handing to NeuralProphet
