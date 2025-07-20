@@ -331,7 +331,12 @@ class Database:
             columns=["ds", "y"]
         )
         if not df.empty:
-            df["ds"] = pd.to_datetime(df["ds"], utc=True)
+            # robust ISO‑8601 parsing (handles 'T', microseconds, ±HH:MM)
+            df["ds"] = pd.to_datetime(
+                df["ds"], format="ISO8601", utc=True, errors="coerce"
+            )
+            df.dropna(subset=["ds"], inplace=True)      # drop any rows that still failed
+
         return df
 
     async def store_history(
