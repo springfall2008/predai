@@ -264,7 +264,7 @@ class Database:
             if ts not in existing:
                 prev.loc[len(prev)] = {"ds": row["ds"], "y": row["y"]}
                 self.cur.execute(
-                    f"INSERT INTO {table} (timestamp, value) VALUES ('{ts}', {row['y']})"
+                    f"INSERT OR IGNORE INTO {table} (timestamp, value) VALUES ('{ts}', {row['y']})"
                 )
                 added += 1
         self.con.commit()
