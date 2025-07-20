@@ -909,12 +909,6 @@ async def predai_main():
                 tasks.append(asyncio.create_task(run_sensor_job(s, role_cfg, cfg, iface, cov_res, db)))
             await asyncio.gather(*tasks)
 
-                role_cfg = cfg.roles.get(s.role, RoleCfg())
-                try:
-                    await run_sensor_job(s, role_cfg, cfg, iface, cov_res, db)
-                except Exception as e:
-                    logger.exception("Sensor job failed for %s: %s", s.name, e)
-
             now_str = datetime.now(timezone.utc).isoformat()
             await iface.set_state(
                 "sensor.predai_last_run",
