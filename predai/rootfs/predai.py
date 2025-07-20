@@ -87,18 +87,18 @@ class HAInterface:
             return None
 
     async def get_history(self, table: str) -> pd.DataFrame:
-    self.cur.execute(f"SELECT * FROM {table} ORDER BY timestamp")
-    rows = self.cur.fetchall()
-    df = (
-        pd.DataFrame(rows, columns=["ds", "y"])
-        if rows
-        else pd.DataFrame(columns=["ds", "y"])
-    )
-    if not df.empty:
-        # robust ISO‑8601 parsing (handles 'T', microseconds, ±HH:MM)
-        df["ds"] = pd.to_datetime(
-            df["ds"], format="ISO8601", utc=True, errors="coerce"
+        self.cur.execute(f"SELECT * FROM {table} ORDER BY timestamp")
+        rows = self.cur.fetchall()
+        df = (
+            pd.DataFrame(rows, columns=["ds", "y"])
+            if rows
+            else pd.DataFrame(columns=["ds", "y"])
         )
+        if not df.empty:
+            # robust ISO‑8601 parsing (handles 'T', microseconds, ±HH:MM)
+            df["ds"] = pd.to_datetime(
+                df["ds"], format="ISO8601", utc=True, errors="coerce"
+            )
     return df
 
     async def get_state(
