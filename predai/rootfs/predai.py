@@ -445,8 +445,8 @@ async def build_covariate_frames(
                     {"ds": list(fut.keys()), col: list(fut.values())}
                 )
 
-    if merged is None:
-        merged = pd.DataFrame()
+    if merged is None or merged.empty:         
+        return meta, pd.DataFrame(), future_frames
     merged.sort_values("ds", inplace=True)
     merged.reset_index(drop=True, inplace=True)
     merged.fillna(method='ffill', inplace=True)
