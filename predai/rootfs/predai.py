@@ -517,17 +517,16 @@ async def main() -> None:
                 period=period,
                 days=days,
             )
-            dataset = (
-                main_df.merge(cov_hist, on="ds", how="left")
-                if not cov_hist_fragment.empty:
-                    # Hard‑force both columns to tz‑aware datetimes to stop dtype mismatch
-                    main_df["ds"] = pd.to_datetime(main_df["ds"], utc=True, errors="coerce")
-                    cov_hist_fragment["ds"] = pd.to_datetime(cov_hist_fragment["ds"], utc=True, errors="coerce")
-                
-                    dataset = main_df.merge(cov_hist_fragment, on="ds", how="left")
-                else:
-                    dataset = main_df
-            )
+            if not cov_hist_fragment.empty:
+                # Make absolutely sure both sides use tz‑aware datetimes
+                main_df["ds"] = pd.to_datetime(main_df["ds"], utc=True, errors="coerce")
+                cov_hist_fragment["ds"] = pd.to_datetime(
+                    cov_hist_fragment["ds"], utc=True, errors="coerce"
+                )
+            
+                dataset = main_df.merge(cov_hist_fragment, on="ds", how="left")
+            else:
+                dataset = main_df
             dataset.fillna(method="ffill", inplace=True)
 
             # train & predict
