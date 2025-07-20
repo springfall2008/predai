@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
 """
-predai.py – Enhanced PredAI with covariates and robust timestamp handling
-=========================================================================
-Key features
-------------
-• Historic‑only (lagged) *and* future‑known regressors
-• Time‑zone‑aware `ds` column – no merge dtype errors
-• ApexCharts‑ready forecast in <target>_prediction.results
-• Optional SQLite caching of historical rows
+predai.py – Hardened PredAI with covariate support & NaN‑robust training
+========================================================================
+Key additions:
+* Covariates (future & lagged) – optional
+* Clean fallback to target‑only mode (mirrors original behaviour)
+* Explicit dataset cleaning (drops NaN/Inf targets, de‑dupes timestamps)
+* Naïve forecast fallback for constant / tiny series
+* Auto n_lags relaxation
+* Safe JSON output (never sends NaN / Inf to HA)
+* Deprecation‑proof forward fill (.ffill())
+* Detailed one‑off NaN diagnostics (disable after stabilisation)
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
+import os
+import math
+import asyncio
+from datetime import datetime, timedelta, timezone
+
 import pandas as pd
 import sqlite3
-from datetime import datetime, timedelta, timezone
-from neuralprophet import NeuralProphet, set_log_level
-import os
 import requests
-import asyncio
-import math
+from neuralprophet import NeuralProphet, set_log_level
 import yaml
 
 # ---------------------------------------------------------------------
@@ -44,29 +49,43 @@ def timestr_to_datetime(ts: str | None) -> datetime | None:
             continue
     return None
 
-# -----------------------------------------------------------------
-# helper – add near the top after imports
-# -----------------------------------------------------------------
-_nan_flag = False
-def report_nans(label: str, df: pd.DataFrame):
-    global _nan_flag
-    if _nan_flag:   # already reported this cycle
-        return
-    bad = df.replace([float("inf"), -float("inf")], math.nan).isna().any()
-    if bad.any():
-        cols = bad[bad].index.tolist()
-        count = df[cols].isna().sum().to_dict()
-        print(f"[NaN‑debug] {label}: NaNs/Inf detected in {cols} counts={count}")
-        _nan_flag = True
-# -----------------------------------------------------------------
+def _finite(x: Any) -> bool:
+    return isinstance(x, (int, float)) and math.isfinite(x)
 
+_nan_report_issued = False
+def report_nans(label: str, df: pd.DataFrame):
+    """Log first appearance of NaN / Inf in a dataframe (one time per cycle)."""
+    global _nan_report_issued
+    if _nan_report_issued or df.empty:
+        return
+    chk = df.replace([float("inf"), -float("inf")], math.nan).isna().any()
+    if chk.any():
+        cols = chk[chk].index.tolist()
+        counts = df[cols].isna().sum().to_dict()
+        print(f"[NaN‑debug] {label}: non‑finite values in {counts}")
+        _nan_report_issued = True
+
+def clean_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    """Return cleaned copy: replace Inf→NaN, drop NaN targets, forward fill regressors, de‑dup."""
+    if df.empty:
+        return df
+    c = df.copy()
+    c.replace([float("inf"), -float("inf")], math.nan, inplace=True)
+    if "y" in c.columns:
+        c.dropna(subset=["y"], inplace=True)
+    # Forward fill regressors (everything except ds,y)
+    reg_cols = [col for col in c.columns if col not in ("ds", "y")]
+    if reg_cols:
+        c[reg_cols] = c[reg_cols].ffill()
+    c.drop_duplicates(subset=["ds"], keep="last", inplace=True)
+    c.sort_values("ds", inplace=True)
+    c.reset_index(drop=True, inplace=True)
+    return c
 
 # ---------------------------------------------------------------------
 # Home Assistant interface
 # ---------------------------------------------------------------------
 class HAInterface:
-    """Minimal async wrapper around the HA REST API."""
-
     def __init__(self, url: str | None, token: str | None):
         self.ha_url = url or "http://supervisor/core"
         self.ha_key = token or os.environ.get("SUPERVISOR_TOKEN")
@@ -74,14 +93,7 @@ class HAInterface:
             raise SystemExit("Missing Home Assistant token")
         print(f"HA interface → {self.ha_url}")
 
-    async def api_call(
-        self,
-        endpoint: str,
-        *,
-        post: bool = False,
-        json_body: dict | None = None,
-        params: dict | None = None,
-    ):
+    async def api_call(self, endpoint: str, *, post=False, json_body=None, params=None):
         url = self.ha_url + endpoint
         headers = {
             "Authorization": f"Bearer {self.ha_key}",
@@ -103,61 +115,46 @@ class HAInterface:
             print(f"HA api_call error {url}: {exc}")
             return None
 
-    async def get_history(
-                    self,
-                    entity: str,
-                    now: datetime,
-                    *,                # forces keyword‑only args after the star
-                    days: int,
-                ) -> tuple[list, datetime | None, datetime | None]:
+    async def get_history(self, entity: str, now: datetime, *, days: int) -> Tuple[list, datetime | None, datetime | None]:
         start = now - timedelta(days=days)
         data = await self.api_call(
             f"/api/history/period/{start.strftime(TIME_FORMAT_HA)}",
-            params={
-                "filter_entity_id": entity,
-                "end_time": now.strftime(TIME_FORMAT_HA),
-            },
+            params={"filter_entity_id": entity, "end_time": now.strftime(TIME_FORMAT_HA)},
         )
         if not data:
             return [], None, None
-    
         arr = data[0]
-        return (
-            arr,
-            timestr_to_datetime(arr[0]["last_updated"]),
-            timestr_to_datetime(arr[-1]["last_updated"]),
-        )
+        return arr, timestr_to_datetime(arr[0]["last_updated"]), timestr_to_datetime(arr[-1]["last_updated"])
 
-
-    async def get_state(
-        self, entity: str, *, attr: str | None = None, default: Any = None
-    ):
+    async def get_state(self, entity: str, *, attr: str | None = None, default: Any = None):
         s = await self.api_call(f"/api/states/{entity}")
         if not s:
             return default
         return s["attributes"].get(attr, default) if attr else s.get("state", default)
 
-    async def set_state(
-        self, entity: str, state: Any, *, attributes: dict | None = None
-    ):
+    async def set_state(self, entity: str, state: Any, *, attributes: dict | None = None):
         payload = {"state": state}
         if attributes:
             payload["attributes"] = attributes
+        # Drop any non‑serialisable floats before send
+        if attributes:
+            for d in (attributes.get("results"), attributes.get("source")):
+                if isinstance(d, dict):
+                    for k, v in list(d.items()):
+                        if not _finite(v):
+                            d.pop(k, None)
         await self.api_call(f"/api/states/{entity}", post=True, json_body=payload)
 
 # ---------------------------------------------------------------------
 # Prophet wrapper
 # ---------------------------------------------------------------------
 class Prophet:
-    """Wraps NeuralProphet and dataset helpers."""
-
     def __init__(self, period: int = 30):
         set_log_level("ERROR")
         self.period = period
         self.model: NeuralProphet | None = None
         self.forecast: pd.DataFrame | None = None
 
-    # ---------------- dataset helpers
     async def _dataset_from_ha(
         self,
         raw: list[dict[str, Any]],
@@ -183,9 +180,8 @@ class Prophet:
             if last_val is None:
                 last_val = val
             if incrementing:
-                # handle resets and spikes
                 if val < last_val and val < reset_low and last_val > reset_high:
-                    total += val
+                    total += val  # counter reset
                 else:
                     if max_increment and abs(val - last_val) > max_increment:
                         val = last_val
@@ -195,10 +191,7 @@ class Prophet:
             if not pt or pt < cur:
                 idx += 1
                 continue
-            df.loc[len(df)] = {
-                "ds": cur,
-                "y": total if incrementing else val,
-            }
+            df.loc[len(df)] = {"ds": cur, "y": total if incrementing else val}
             cur += timedelta(minutes=self.period)
         df["ds"] = pd.to_datetime(df["ds"], utc=True)
         return df
@@ -216,7 +209,7 @@ class Prophet:
         reset_high: float,
     ) -> pd.DataFrame:
         raw, start, end = await iface.get_history(sensor, now, days=days)
-        if not raw:
+        if not raw or start is None or end is None:
             return pd.DataFrame(columns=["ds", "y"])
         return await self._dataset_from_ha(
             raw,
@@ -228,7 +221,6 @@ class Prophet:
             reset_high=reset_high,
         )
 
-    # ---------------- training & forecasting
     async def train(
         self,
         dataset: pd.DataFrame,
@@ -238,42 +230,81 @@ class Prophet:
         future_frames: Dict[str, pd.DataFrame],
         target_n_lags: int,
         country: str | None,
+        disable_yearly: bool,
+        learning_rate: float | None,
     ):
+        # Clean dataset
+        dataset = clean_dataset(dataset)
+        report_nans("dataset-cleaned", dataset)
+
+        if dataset.empty:
+            print("WARN: dataset empty after cleaning – skipping training.")
+            self.forecast = None
+            return
+
+        # Constant series fallback
+        if dataset["y"].nunique() < 2:
+            print("INFO: constant / flat target – using naïve last-value forecast.")
+            last_val = float(dataset.iloc[-1]["y"])
+            last_ds = dataset.iloc[-1]["ds"]
+            future_idx = pd.date_range(
+                start=last_ds + timedelta(minutes=self.period),
+                periods=future_periods,
+                freq=f"{self.period}min",
+            )
+            full_ds = list(dataset["ds"]) + list(future_idx)
+            self.forecast = pd.DataFrame(
+                {
+                    "ds": full_ds,
+                    "y": list(dataset["y"]) + [math.nan] * future_periods,
+                    "yhat1": [last_val] * (len(full_ds)),
+                }
+            )
+            report_nans("forecast", self.forecast)
+            return
+
+        # Auto relax n_lags if dataset too short
+        if target_n_lags and len(dataset) <= target_n_lags + 10:
+            print(f"Auto-reducing n_lags from {target_n_lags} to 0 (rows={len(dataset)}).")
+            target_n_lags = 0
+
         self.model = NeuralProphet(
             n_lags=target_n_lags,
-            yearly_seasonality=True,
+            yearly_seasonality=not disable_yearly,
             weekly_seasonality=True,
             daily_seasonality=True,
+            learning_rate=learning_rate,  # if None, NP will search/choose
         )
         if country:
             self.model.add_country_holidays(country)
 
-        # register regressors
         for meta in regressor_meta:
             if meta["type"] == "future":
                 self.model.add_future_regressor(meta["name"])
             else:
-                self.model.add_lagged_regressor(
-                    meta["name"], n_lags=meta.get("n_lags", 24)
-                )
+                self.model.add_lagged_regressor(meta["name"], n_lags=meta.get("n_lags", 24))
 
         self.model.fit(dataset, freq=f"{self.period}min", progress=None)
 
         df_future = self.model.make_future_dataframe(
             dataset, n_historic_predictions=True, periods=future_periods
         )
-        # inject future‑known regressor values
+
+        # Inject known future regressors
         for name, fr in future_frames.items():
+            if fr.empty:
+                continue
+            fr = fr.copy()
+            fr["ds"] = pd.to_datetime(fr["ds"], utc=True)
             df_future = df_future.merge(fr, on="ds", how="left", suffixes=("", "_dup"))
             dup = f"{name}_dup"
             if dup in df_future.columns:
                 df_future.drop(columns=[dup], inplace=True)
 
-        df_future.fillna(method='ffill', inplace=True)
+        df_future.ffill(inplace=True)
         self.forecast = self.model.predict(df_future)
         report_nans("forecast", self.forecast)
 
-    # ---------------- save to HA
     async def save_prediction(
         self,
         entity: str,
@@ -285,35 +316,51 @@ class Prophet:
         units: str,
         history_days: int,
     ):
-        if self.forecast is None:
+        if self.forecast is None or self.forecast.empty:
             return
+
         total = total_org = 0.0
         res: Dict[str, float] = {}
         src: Dict[str, float] = {}
+        last_finite_pred = None
+
         for _, r in self.forecast.iterrows():
-            ts = r["ds"].tz_localize(timezone.utc)
+            ds = r["ds"]
+            if ds.tzinfo is None:
+                ds = ds.tz_localize(timezone.utc)
+            ts = ds
             if (now - ts).days > history_days:
                 continue
-            v_pred = r["yhat1"]
+
+            v_pred = r.get("yhat1")
             v_org = r.get("y")
 
-            # handle daily reset for incrementing counters
-            if incrementing and ts <= now and reset_daily and ts.hour == 0 and ts.minute == 0:
-                total = total_org = 0.0
+            if not _finite(v_pred):
+                continue  # skip non‑finite prediction
+            last_finite_pred = v_pred
 
             if incrementing:
+                if ts <= now and reset_daily and ts.hour == 0 and ts.minute == 0:
+                    total = total_org = 0.0
                 total += v_pred
-                if not math.isnan(v_org):
+                if _finite(v_org):
                     total_org += v_org
-                res[ts.strftime(TIME_FORMAT_HA)] = round(total, 2)
-                if not math.isnan(v_org):
+                if _finite(total):
+                    res[ts.strftime(TIME_FORMAT_HA)] = round(total, 2)
+                if _finite(total_org):
                     src[ts.strftime(TIME_FORMAT_HA)] = round(total_org, 2)
             else:
                 res[ts.strftime(TIME_FORMAT_HA)] = round(v_pred, 2)
-                if not math.isnan(v_org):
+                if _finite(v_org):
                     src[ts.strftime(TIME_FORMAT_HA)] = round(v_org, 2)
 
-        final_state = round(total if incrementing else v_pred, 2)
+        if incrementing and _finite(total):
+            final_state = round(total, 2)
+        elif _finite(last_finite_pred):
+            final_state = round(last_finite_pred, 2)
+        else:
+            final_state = 0
+
         await iface.set_state(
             entity,
             final_state,
@@ -330,8 +377,6 @@ class Prophet:
 # SQLite cache
 # ---------------------------------------------------------------------
 class Database:
-    """Simple wrapper around /config/predai.db"""
-
     def __init__(self):
         self.con = sqlite3.connect("/config/predai.db")
         self.cur = self.con.cursor()
@@ -345,30 +390,31 @@ class Database:
     async def get_history(self, table: str) -> pd.DataFrame:
         self.cur.execute(f"SELECT * FROM {table} ORDER BY timestamp")
         rows = self.cur.fetchall()
-        df = pd.DataFrame(rows, columns=["ds", "y"]) if rows else pd.DataFrame(
-            columns=["ds", "y"]
+        df = (
+            pd.DataFrame(rows, columns=["ds", "y"])
+            if rows
+            else pd.DataFrame(columns=["ds", "y"])
         )
         if not df.empty:
-            # robust ISO‑8601 parsing (handles 'T', microseconds, ±HH:MM)
             df["ds"] = pd.to_datetime(
                 df["ds"], format="ISO8601", utc=True, errors="coerce"
             )
-            df.dropna(subset=["ds"], inplace=True)      # drop any rows that still failed
-
+            df.dropna(subset=["ds"], inplace=True)
         return df
 
     async def store_history(
         self, table: str, history: pd.DataFrame, prev: pd.DataFrame
     ) -> pd.DataFrame:
-        prev_str = prev["ds"].astype(str).tolist()
+        prev_set = set(prev["ds"].astype(str).tolist())
         added = 0
         for _, row in history.iterrows():
             ts_str = str(row["ds"])
             val = row["y"]
-            if ts_str not in prev_str:
+            if ts_str not in prev_set:
                 prev.loc[len(prev)] = {"ds": row["ds"], "y": val}
                 self.cur.execute(
-                    f"INSERT INTO {table} (timestamp, value) VALUES ('{ts_str}', {val})"
+                    "INSERT INTO {} (timestamp, value) VALUES (?, ?)".format(table),
+                    (ts_str, float(val)),
                 )
                 added += 1
         self.con.commit()
@@ -400,13 +446,14 @@ async def build_covariate_frames(
     future_frames: Dict[str, pd.DataFrame] = {}
 
     for cov in cov_configs:
-        ent = cov["entity_id"]
+        ent = cov.get("entity_id")
+        if not ent:
+            continue
         col = ent.replace(".", "_")
         future_known = bool(cov.get("future", False))
         n_lags = int(cov.get("n_lags", 24))
         incrementing = bool(cov.get("incrementing", False))
 
-        # historical part
         hist = await prophet.historical_dataframe(
             iface,
             ent,
@@ -419,9 +466,7 @@ async def build_covariate_frames(
         )
         hist.rename(columns={"y": col}, inplace=True)
 
-        merged = hist if merged is None else merged.merge(
-            hist, on="ds", how="outer"
-        )
+        merged = hist if merged is None else merged.merge(hist, on="ds", how="outer")
 
         meta.append(
             {
@@ -431,7 +476,6 @@ async def build_covariate_frames(
             }
         )
 
-        # future‑known values from sensor attribute “results”
         if future_known:
             attr = await iface.get_state(ent, attr="results")
             fut: Dict[datetime, float] = {}
@@ -439,32 +483,37 @@ async def build_covariate_frames(
                 for ts_str, val in attr.items():
                     dt = timestr_to_datetime(ts_str)
                     if dt and dt >= now:
-                        fut[dt] = float(val)
+                        try:
+                            fut[dt] = float(val)
+                        except (TypeError, ValueError):
+                            continue
             if fut:
                 future_frames[col] = pd.DataFrame(
                     {"ds": list(fut.keys()), col: list(fut.values())}
                 )
 
-    if merged is None or merged.empty:         
+    if merged is None or merged.empty:
         return meta, pd.DataFrame(), future_frames
+
     merged.sort_values("ds", inplace=True)
     merged.reset_index(drop=True, inplace=True)
-    merged.fillna(method='ffill', inplace=True)
-    merged["ds"] = pd.to_datetime(merged["ds"], utc=True)
+    merged.ffill(inplace=True)
+    merged["ds"] = pd.to_datetime(merged["ds"], utc=True, errors="coerce")
+    merged.dropna(subset=["ds"], inplace=True)
     return meta, merged, future_frames
 
 # ---------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------
 async def main() -> None:
-    cfg = yaml.safe_load(open("/config/predai.yaml"))
+    config_path = "/config/predai.yaml"
+    cfg = yaml.safe_load(open(config_path))
     iface = HAInterface(cfg.get("ha_url"), cfg.get("ha_key"))
 
     while True:
-        cfg = yaml.safe_load(open("/config/predai.yaml")) or {}
+        cfg = yaml.safe_load(open(config_path)) or {}
         interval_run = cfg.get("update_every", 30)
         sensors_cfg = cfg.get("sensors", [])
-
         now = datetime.now(timezone.utc).replace(second=0, microsecond=0, minute=0)
 
         for s_cfg in sensors_cfg:
@@ -473,7 +522,7 @@ async def main() -> None:
                 continue
             print(f"\n=== {target} @ {now.isoformat()} ===")
 
-            # parameters
+            # Parameters
             days = s_cfg.get("days", 7)
             export_days = s_cfg.get("export_days", days)
             incrementing = s_cfg.get("incrementing", False)
@@ -488,10 +537,11 @@ async def main() -> None:
             n_lags_target = s_cfg.get("n_lags", 0)
             country = s_cfg.get("country")
             max_age = s_cfg.get("max_age", 365)
+            learning_rate = s_cfg.get("learning_rate")  # optional override
+            disable_yearly_cfg = bool(s_cfg.get("disable_yearly", False))
 
             prophet = Prophet(period)
 
-            # main dataset
             main_df = await prophet.historical_dataframe(
                 iface,
                 target,
@@ -502,10 +552,11 @@ async def main() -> None:
                 reset_low=reset_low,
                 reset_high=reset_high,
             )
-            main_df["ds"] = pd.to_datetime(main_df["ds"], utc=True)
+            main_df["ds"] = pd.to_datetime(main_df["ds"], utc=True, errors="coerce")
+            main_df.dropna(subset=["ds"], inplace=True)
             report_nans("main_df", main_df)
 
-            # subtract sensors
+            # Subtract sensors (optional)
             subtract_names = s_cfg.get("subtract")
             if subtract_names:
                 if isinstance(subtract_names, str):
@@ -525,11 +576,11 @@ async def main() -> None:
                         sub_df, on="ds", how="left", suffixes=("", "_sub")
                     )
                     main_df["y"] = (
-                        main_df["y"].fillna(method="ffill") - main_df["y_sub"].fillna(0)
+                        main_df["y"].ffill() - main_df["y_sub"].fillna(0)
                     )
                     main_df.drop(columns=["y_sub"], inplace=True)
 
-            # database cache
+            # Database cache
             if use_db:
                 tbl = target.replace(".", "_")
                 db = Database()
@@ -538,7 +589,7 @@ async def main() -> None:
                 main_df = await db.store_history(tbl, main_df, prev_hist)
                 await db.cleanup_table(tbl, max_age)
 
-            # covariates
+            # Covariates
             cov_meta, cov_hist, future_frames = await build_covariate_frames(
                 s_cfg.get("covariates", []),
                 iface,
@@ -548,18 +599,20 @@ async def main() -> None:
                 days=days,
             )
 
-            if not cov_hist.empty:
-                # ensure tz‑aware timestamps on both sides
+            if cov_hist.empty:
+                dataset = main_df.copy()
+            else:
                 main_df["ds"] = pd.to_datetime(main_df["ds"], utc=True, errors="coerce")
                 cov_hist["ds"] = pd.to_datetime(cov_hist["ds"], utc=True, errors="coerce")
-            
                 dataset = main_df.merge(cov_hist, on="ds", how="left")
-            else:
-                dataset = main_df
-            dataset.fillna(method='ffill', inplace=True)
-            report_nans("cov_hist merged", dataset)
+                dataset.ffill(inplace=True)
+            report_nans("merged-dataset", dataset)
 
-            # train & predict
+            # Auto-disable yearly if short history (< 30 days) unless explicitly forced on/off
+            history_minutes = len(dataset) * period
+            auto_disable_yearly = history_minutes < 30 * 24 * 60
+            disable_yearly = disable_yearly_cfg or auto_disable_yearly
+
             await prophet.train(
                 dataset,
                 future_periods,
@@ -567,6 +620,8 @@ async def main() -> None:
                 future_frames=future_frames,
                 target_n_lags=n_lags_target,
                 country=country,
+                disable_yearly=disable_yearly,
+                learning_rate=learning_rate,
             )
             await prophet.save_prediction(
                 f"{target}_prediction",
@@ -578,17 +633,17 @@ async def main() -> None:
                 history_days=export_days,
             )
 
-        # heartbeat sensor & sleep
+        # Heartbeat
         await iface.set_state(
             "sensor.predai_last_run",
             str(datetime.now(timezone.utc)),
             attributes={"unit_of_measurement": "time"},
         )
-        print(f"Sleeping {interval_run} minutes…")
+        print(f"Sleeping {interval_run} minutes…")
         for _ in range(interval_run):
             last_run = await iface.get_state("sensor.predai_last_run")
             if last_run is None:
-                print("sensor.predai_last_run removed – restarting loop")
+                print("sensor.predai_last_run removed – restarting loop early")
                 break
             await asyncio.sleep(60)
 
