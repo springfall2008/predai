@@ -86,20 +86,31 @@ class HAInterface:
             print(f"HA api_call error {url}: {exc}")
             return None
 
-    async def get_history(self, table: str) -> pd.DataFrame:
-        self.cur.execute(f"SELECT * FROM {table} ORDER BY timestamp")
-        rows = self.cur.fetchall()
-        df = (
-            pd.DataFrame(rows, columns=["ds", "y"])
-            if rows
-            else pd.DataFrame(columns=["ds", "y"])
+    async def get_history(
+                    self,
+                    entity: str,
+                    now: datetime,
+                    *,                # forces keyword‑only args after the star
+                    days: int,
+                ) -> tuple[list, datetime | None, datetime | None]:
+        start = now - timedelta(days=days)
+        data = await self.api_call(
+            f"/api/history/period/{start.strftime(TIME_FORMAT_HA)}",
+            params={
+                "filter_entity_id": entity,
+                "end_time": now.strftime(TIME_FORMAT_HA),
+            },
         )
-        if not df.empty:
-            # robust ISO‑8601 parsing (handles 'T', microseconds, ±HH:MM)
-            df["ds"] = pd.to_datetime(
-                df["ds"], format="ISO8601", utc=True, errors="coerce"
-            )
-        return df
+        if not data:
+            return [], None, None
+    
+        arr = data[0]
+        return (
+            arr,
+            timestr_to_datetime(arr[0]["last_updated"]),
+            timestr_to_datetime(arr[-1]["last_updated"]),
+        )
+
 
     async def get_state(
         self, entity: str, *, attr: str | None = None, default: Any = None
