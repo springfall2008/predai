@@ -554,7 +554,7 @@ class NPBackend:
             n_forecasts=n_forecasts,
             seasonality_mode=seasonality_mode,
             seasonality_reg=seasonality_reg,
-            drop_missing=True
+            #drop_missing=True
         )
         if learning_rate is not None:
             kw["learning_rate"] = learning_rate
@@ -877,6 +877,42 @@ async def run_sensor_job(sensor: SensorCfg,
             else:
                 train_df[cov] = np.nan
             backend.add_future_regressor(cov, mode="additive")
+
+        # ------------------------------------------------------------
+        # DEBUG: which columns still contain NaNs?
+        # ------------------------------------------------------------
+        bad_cols = train_df.columns[train_df.isna().any()].tolist()
+        if bad_cols:
+            logger.warning(
+                "Sensor %s: columns with NaNs before final fill → %s",
+                sensor.name, bad_cols
+            )
+            # Print a couple of sample rows with NaNs
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Rows with NaNs:\n%s",
+                    train_df[train_df[bad_cols].isna().any(axis=1)].head(5).to_string(index=False)
+                )
+
+        # ------------------------------------------------------------
+        # LAST CHANCE CLEAN‑UP: ensure continuous timeline & no NaNs
+        # ------------------------------------------------------------
+        full_idx = pd.date_range(
+            start=train_df["ds"].min(),
+            end=train_df["ds"].max(),
+            freq=freq,
+            tz="UTC",
+        )
+        train_df = (
+            train_df.set_index("ds")
+                    .reindex(full_idx)        # insert missing rows
+                    .ffill()
+                    .bfill()
+                    .fillna(0.0)              # any stubborn gaps -> 0.0
+                    .reset_index()
+                    .rename(columns={"index": "ds"})
+        )
+
 
         # Fit
         await np_fit(backend, train_df, freq)
