@@ -267,9 +267,9 @@ class Prophet:
             df_future = df_future.merge(fr, on="ds", how="left", suffixes=("", "_dup"))
             dup = f"{name}_dup"
             if dup in df_future.columns:
-                df_future.drop(columns=[dup], inplace=True)
+                df_future.drop(columns=[dup], method='ffill', inplace=True)
 
-        df_future.fillna(inplace=True)
+        df_future.fillna(method='ffill', inplace=True)
         self.forecast = self.model.predict(df_future)
         report_nans("forecast", self.forecast)
 
@@ -353,7 +353,7 @@ class Database:
             df["ds"] = pd.to_datetime(
                 df["ds"], format="ISO8601", utc=True, errors="coerce"
             )
-            df.dropna(subset=["ds"], inplace=True)      # drop any rows that still failed
+            df.dropna(subset=["ds"], method='ffill', inplace=True)      # drop any rows that still failed
 
         return df
 
@@ -417,7 +417,7 @@ async def build_covariate_frames(
             reset_low=0.0,
             reset_high=0.0,
         )
-        hist.rename(columns={"y": col}, inplace=True)
+        hist.rename(columns={"y": col}, method='ffill', inplace=True)
 
         merged = hist if merged is None else merged.merge(
             hist, on="ds", how="outer"
@@ -447,9 +447,9 @@ async def build_covariate_frames(
 
     if merged is None:
         merged = pd.DataFrame()
-    merged.sort_values("ds", inplace=True)
-    merged.reset_index(drop=True, inplace=True)
-    merged.fillna(inplace=True)
+    merged.sort_values("ds", method='ffill', inplace=True)
+    merged.reset_index(drop=True, method='ffill', inplace=True)
+    merged.fillna(method='ffill', inplace=True)
     merged["ds"] = pd.to_datetime(merged["ds"], utc=True)
     return meta, merged, future_frames
 
@@ -527,7 +527,7 @@ async def main() -> None:
                     main_df["y"] = (
                         main_df["y"].fillna(method="ffill") - main_df["y_sub"].fillna(0)
                     )
-                    main_df.drop(columns=["y_sub"], inplace=True)
+                    main_df.drop(columns=["y_sub"], method='ffill', inplace=True)
 
             # database cache
             if use_db:
@@ -556,7 +556,7 @@ async def main() -> None:
                 dataset = main_df.merge(cov_hist, on="ds", how="left")
             else:
                 dataset = main_df
-            dataset.fillna(inplace=True)
+            dataset.fillna(method='ffill', inplace=True)
             report_nans("cov_hist merged", dataset)
 
             # train & predict
