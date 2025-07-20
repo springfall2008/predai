@@ -99,7 +99,7 @@ class HAInterface:
             df["ds"] = pd.to_datetime(
                 df["ds"], format="ISO8601", utc=True, errors="coerce"
             )
-    return df
+        return df
 
     async def get_state(
         self, entity: str, *, attr: str | None = None, default: Any = None
