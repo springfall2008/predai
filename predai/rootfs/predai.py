@@ -252,7 +252,7 @@ class Prophet:
             if dup in df_future.columns:
                 df_future.drop(columns=[dup], inplace=True)
 
-        df_future.fillna(method="ffill", inplace=True)
+        df_future.fillna(inplace=True)
         self.forecast = self.model.predict(df_future)
 
     # ---------------- save to HA
@@ -431,7 +431,7 @@ async def build_covariate_frames(
         merged = pd.DataFrame()
     merged.sort_values("ds", inplace=True)
     merged.reset_index(drop=True, inplace=True)
-    merged.fillna(method="ffill", inplace=True)
+    merged.fillna(inplace=True)
     merged["ds"] = pd.to_datetime(merged["ds"], utc=True)
     return meta, merged, future_frames
 
@@ -537,7 +537,7 @@ async def main() -> None:
                 dataset = main_df.merge(cov_hist, on="ds", how="left")
             else:
                 dataset = main_df
-            dataset.fillna(method="ffill", inplace=True)
+            dataset.fillna(inplace=True)
 
             # train & predict
             await prophet.train(
