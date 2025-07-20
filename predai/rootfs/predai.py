@@ -579,8 +579,6 @@ class NPBackend:
         return self.model.predict(df_future)
 
 
-#
-
 # --------------------------------------------------------------------------- #
 # Non‑blocking wrappers for NeuralProphet (added July 2025)
 # --------------------------------------------------------------------------- #
@@ -596,7 +594,7 @@ async def np_predict(backend, df_future: pd.DataFrame) -> pd.DataFrame:
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, backend.predict, df_future)
 
- --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
 # Horizon helpers & publishing
 # --------------------------------------------------------------------------- #
 
