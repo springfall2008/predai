@@ -554,7 +554,7 @@ class NPBackend:
             n_forecasts=n_forecasts,
             seasonality_mode=seasonality_mode,
             seasonality_reg=seasonality_reg,
-            drop_missing=True
+            #drop_missing=True
         )
         if learning_rate is not None:
             kw["learning_rate"] = learning_rate
