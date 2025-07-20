@@ -5,7 +5,7 @@ PredAI (fork) — config‑driven multi‑horizon forecasting for Home Assistant
 Key features:
 * Configurable sensor roles (energy counters, temperature, Mixergy immersion demand, etc.).
 * Automatic power→energy integration for non‑cumulative power sensors (mean power -> kWh/interval).
-* Covariate alias + scaling from YAML covariates: section.
+* Covariate alias + scaling from YAML `covariates:` section.
 * Interval, cumulative, daily_cum, and horizon (+2h/+8h/+12h or custom) forecast publishing.
 * Async Home Assistant API via aiohttp.
 * SQLite history cache.
@@ -24,8 +24,6 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-from pandas.api.types import is_numeric_dtype
-
 
 import numpy as np
 import pandas as pd
@@ -388,7 +386,6 @@ class HistoryDB:
 
     def get_history(self, table: str) -> pd.DataFrame:
         t = self.safe_name(table)
-        self.create_table(t) 
         self.cur.execute(f"SELECT * FROM {t} ORDER BY timestamp")
         rows = self.cur.fetchall()
         if not rows:
@@ -409,7 +406,7 @@ class HistoryDB:
             timestamp_s = timestamp.isoformat()
             value = float(row["y"])
             if timestamp_s not in prev_values:
-                self.cur.execute(f"INSERT OR IGNORE INTO {t} (timestamp, value) VALUES (?, ?)", (timestamp_s, value))
+                self.cur.execute(f"INSERT INTO {t} (timestamp, value) VALUES (?, ?)", (timestamp_s, value))
                 prev_values.add(timestamp_s)
                 prev.loc[len(prev)] = {"ds": timestamp, "y": value}
                 added += 1
@@ -451,8 +448,7 @@ def resample_sensor(df: pd.DataFrame, freq: str, how: str) -> pd.DataFrame:
 
 def cumulative_to_interval(df: pd.DataFrame, reset_cfg: ResetDetectionCfg) -> pd.DataFrame:
     if df.empty:
-        df["y"] = []
-        return df
+        return pd.DataFrame(columns=["ds", "y"], dtype="float64")
     df = df.sort_values("ds").reset_index(drop=True)
     v = df["value"].to_numpy()
     delta = np.diff(v, prepend=v[0])
@@ -583,7 +579,24 @@ class NPBackend:
         return self.model.predict(df_future)
 
 
+#
+
 # --------------------------------------------------------------------------- #
+# Non‑blocking wrappers for NeuralProphet (added July 2025)
+# --------------------------------------------------------------------------- #
+
+async def np_fit(backend, df: pd.DataFrame, freq: str):
+    """Run blocking NeuralProphet.fit in a thread pool."""
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, backend.fit, df, freq)
+
+
+async def np_predict(backend, df_future: pd.DataFrame) -> pd.DataFrame:
+    """Run blocking NeuralProphet.predict in a thread pool."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, backend.predict, df_future)
+
+ --------------------------------------------------------------------------- #
 # Horizon helpers & publishing
 # --------------------------------------------------------------------------- #
 
@@ -828,44 +841,20 @@ async def run_sensor_job(sensor: SensorCfg,
                 train_df[cov] = np.nan
             backend.add_future_regressor(cov, mode="additive")
 
-        train_df = train_df.ffill().bfill()   # ADD – fill internal NaNs
-        # NEW: coerce future‑regressor columns to numeric, replace non‑numeric with 0
-        for cov in sensor.covariates_future:
-            train_df[cov] = pd.to_numeric(train_df[cov], errors="coerce")
-            train_df[cov] = train_df[cov].fillna(0.0)
-        train_df = train_df.dropna()          # ADD – drop any rows still invalid
-        
         # Fit
-        backend.fit(train_df, freq=freq)
+        await np_fit(backend, train_df, freq)
 
         # Future frame
         df_future = backend.make_future(train_df, periods=steps)
-        # ------------------------------------------------------------------
-        # PATCH: ensure every future regressor column is fully populated
-        # ------------------------------------------------------------------
-        base_ts = train_df["ds"].max()
-        fut_mask = df_future["ds"] > base_ts
-        for cov in sensor.covariates_future:
-            # 1. Try user‑supplied future series
-            if fut_mask.any():
-                fut_idx = pd.to_datetime(df_future.loc[fut_mask, "ds"], utc=True)
-                fut_s = await cov_res.get_future_series(cov, fut_idx, default=np.nan)
+        fut_mask = df_future["ds"] > train_df["ds"].max()
+        if fut_mask.any():
+            fut_idx = pd.to_datetime(df_future.loc[fut_mask, "ds"], utc=True)
+            for cov in sensor.covariates_future:
+                fut_s = await cov_res.get_future_series(cov, fut_idx, default=0.0)
                 df_future.loc[fut_mask, cov] = fut_s.to_numpy()
-        
-            # 2. If still missing, hold‑flat last historic numeric value
-            if df_future[cov].isna().any():
-                last_val = train_df[cov].dropna()
-                if not last_val.empty and is_numeric_dtype(last_val):
-                    fill_val = float(last_val.iloc[-1])
-                    df_future.loc[fut_mask, cov] = df_future.loc[fut_mask, cov].fillna(fill_val)
-                else:
-                    # fall‑back: zero
-                    df_future[cov] = df_future[cov].fillna(0.0)
-        # ------------------------------------------------------------------
-
 
         # Predict
-        fcst = backend.predict(df_future)
+        fcst = await np_predict(backend, df_future)
 
         # Extract forecast row corresponding to last training timestamp
         base = train_df["ds"].max()
@@ -915,7 +904,13 @@ async def predai_main():
             # refresh covariate map
             cov_res.map = cfg.cov_map
 
+            
+            tasks = []
             for s in cfg.sensors:
+                role_cfg = cfg.roles.get(s.role, RoleCfg())
+                tasks.append(asyncio.create_task(run_sensor_job(s, role_cfg, cfg, iface, cov_res, db)))
+            await asyncio.gather(*tasks)
+
                 role_cfg = cfg.roles.get(s.role, RoleCfg())
                 try:
                     await run_sensor_job(s, role_cfg, cfg, iface, cov_res, db)
