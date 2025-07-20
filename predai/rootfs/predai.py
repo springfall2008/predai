@@ -811,6 +811,24 @@ async def run_sensor_job(sensor: SensorCfg,
     # Training frame
     train_df = df[["ds", "y"]].copy()
 
+    # ------------------------------------------------------------
+    # DEBUG: log basic frame stats before handing to NeuralProphet
+    # ------------------------------------------------------------
+    dup_ts = train_df["ds"].duplicated().sum()
+    nan_rows = train_df.isna().any(axis=1).sum()
+    nan_cols = train_df.columns[train_df.isna().any()].tolist()
+    logger.info(
+        "NP check %s: rows=%s  dup_ts=%s  NaN_rows=%s  nan_cols=%s  cols=%s",
+        sensor.name, len(train_df), dup_ts, nan_rows, nan_cols, list(train_df.columns)
+    )
+
+    # Uncomment to dump head/tail for deep inspection
+    if logger.isEnabledFor(logging.DEBUG):
+        head = train_df.head(2).to_string(index=False)
+        tail = train_df.tail(2).to_string(index=False)
+        logger.debug("first rows\n%s\nlast rows\n%s", head, tail)
+
+
     if role_cfg.model_backend == "neuralprophet":
         steps = max(horizon_steps(m, interval_min) for m in cfg.horizons)
         backend = NPBackend(
