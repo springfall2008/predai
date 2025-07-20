@@ -353,7 +353,7 @@ class Database:
             df["ds"] = pd.to_datetime(
                 df["ds"], format="ISO8601", utc=True, errors="coerce"
             )
-            df.dropna(subset=["ds"], method='ffill', inplace=True)      # drop any rows that still failed
+            df.dropna(subset=["ds"], inplace=True)      # drop any rows that still failed
 
         return df
 
