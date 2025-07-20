@@ -44,6 +44,23 @@ def timestr_to_datetime(ts: str | None) -> datetime | None:
             continue
     return None
 
+# -----------------------------------------------------------------
+# helper – add near the top after imports
+# -----------------------------------------------------------------
+_nan_flag = False
+def report_nans(label: str, df: pd.DataFrame):
+    global _nan_flag
+    if _nan_flag:   # already reported this cycle
+        return
+    bad = df.replace([float("inf"), -float("inf")], math.nan).isna().any()
+    if bad.any():
+        cols = bad[bad].index.tolist()
+        count = df[cols].isna().sum().to_dict()
+        print(f"[NaN‑debug] {label}: NaNs/Inf detected in {cols} counts={count}")
+        _nan_flag = True
+# -----------------------------------------------------------------
+
+
 # ---------------------------------------------------------------------
 # Home Assistant interface
 # ---------------------------------------------------------------------
@@ -254,6 +271,7 @@ class Prophet:
 
         df_future.fillna(inplace=True)
         self.forecast = self.model.predict(df_future)
+        report_nans("forecast", self.forecast)
 
     # ---------------- save to HA
     async def save_prediction(
@@ -485,6 +503,7 @@ async def main() -> None:
                 reset_high=reset_high,
             )
             main_df["ds"] = pd.to_datetime(main_df["ds"], utc=True)
+            report_nans("main_df", main_df)
 
             # subtract sensors
             subtract_names = s_cfg.get("subtract")
@@ -538,6 +557,7 @@ async def main() -> None:
             else:
                 dataset = main_df
             dataset.fillna(inplace=True)
+            report_nans("cov_hist merged", dataset)
 
             # train & predict
             await prophet.train(
