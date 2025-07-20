@@ -829,10 +829,10 @@ async def run_sensor_job(sensor: SensorCfg,
             backend.add_future_regressor(cov, mode="additive")
 
         train_df = train_df.ffill().bfill()   # ADD – fill internal NaNs
-        # NEW: guarantee every future regressor has a value in the last row
+        # NEW: coerce future‑regressor columns to numeric, replace non‑numeric with 0
         for cov in sensor.covariates_future:
-            if train_df[cov].isna().any():
-                train_df[cov] = train_df[cov].fillna(0.0)
+            train_df[cov] = pd.to_numeric(train_df[cov], errors="coerce")
+            train_df[cov] = train_df[cov].fillna(0.0)
         train_df = train_df.dropna()          # ADD – drop any rows still invalid
         
         # Fit
