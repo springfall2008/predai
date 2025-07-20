@@ -63,7 +63,7 @@ class HAInterface:
     async def get_history(self, sensor: str, now: datetime, days: int = 7):
         """
         Fetch raw history events for a sensor from Home Assistant over the past 'days'.
-        Returns (events_list, start_dt, end_dt).
+        Returns (events_list, start_dt, end_dt). If data is missing or malformed, returns empty list.
         """
         start = now - timedelta(days=days)
         end = now
@@ -72,12 +72,22 @@ class HAInterface:
             f"/api/history/period/{start.strftime(TIME_FORMAT_HA)}",
             {"filter_entity_id": sensor, "end_time": end.strftime(TIME_FORMAT_HA)}
         )
-        if not res:
+        # Validate response format
+        if not isinstance(res, list) or len(res) == 0:
+            print(f"No history returned for {sensor}")
             return [], start, end
-        events = res[0]
-        # Determine true start/end from data
-        start_dt = timestr_to_datetime(events[0]["last_updated"])
-        end_dt = timestr_to_datetime(events[-1]["last_updated"])
+        first = res[0]
+        if not isinstance(first, list) or len(first) == 0:
+            print(f"Unexpected history format for {sensor}: {res}")
+            return [], start, end
+        events = first
+        # Determine true start/end from data entries
+        try:
+            start_dt = timestr_to_datetime(events[0]["last_updated"])
+            end_dt = timestr_to_datetime(events[-1]["last_updated"])
+        except (KeyError, IndexError, TypeError) as e:
+            print(f"Error parsing history timestamps for {sensor}: {e}")
+            return [], start, end
         return events, start_dt, end_dt
 
     async def get_state(self, entity_id: str, default: Any = None, attribute: str = None) -> Any:
@@ -257,16 +267,28 @@ class Database:
     async def store_history(
         self, table: str, new_data: pd.DataFrame, prev: pd.DataFrame
     ) -> pd.DataFrame:
+        """
+        Store new_data in the database, avoiding duplicates via INSERT OR IGNORE.
+        Returns updated prev DataFrame.
+        """
         added = 0
         existing = prev["ds"].astype(str).tolist()
         for _, row in new_data.iterrows():
             ts = str(row["ds"])
             if ts not in existing:
                 prev.loc[len(prev)] = {"ds": row["ds"], "y": row["y"]}
-                self.cur.execute(
-                    f"INSERT OR IGNORE INTO {table} (timestamp, value) VALUES ('{ts}', {row['y']})"
-                )
-                added += 1
+                try:
+                    # Use parameterised query and IGNORE duplicates
+                    self.cur.execute(
+                        f"INSERT OR IGNORE INTO {table} (timestamp, value) VALUES (?, ?)",
+                        (ts, row["y"])
+                    )
+                    # rowcount > 0 indicates a new row was inserted
+                    if self.cur.rowcount:
+                        added += 1
+                except sqlite3.IntegrityError:
+                    # Skip duplicates or other integrity issues
+                    pass
         self.con.commit()
         print(f"Added {added} rows to {table}")
         return prev
