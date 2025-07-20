@@ -528,14 +528,13 @@ async def main() -> None:
                 period=period,
                 days=days,
             )
-            if not cov_hist_fragment.empty:
-                # Make absolutely sure both sides use tz‑aware datetimes
+
+            if not cov_hist.empty:
+                # ensure tz‑aware timestamps on both sides
                 main_df["ds"] = pd.to_datetime(main_df["ds"], utc=True, errors="coerce")
-                cov_hist_fragment["ds"] = pd.to_datetime(
-                    cov_hist_fragment["ds"], utc=True, errors="coerce"
-                )
+                cov_hist["ds"] = pd.to_datetime(cov_hist["ds"], utc=True, errors="coerce")
             
-                dataset = main_df.merge(cov_hist_fragment, on="ds", how="left")
+                dataset = main_df.merge(cov_hist, on="ds", how="left")
             else:
                 dataset = main_df
             dataset.fillna(method="ffill", inplace=True)
