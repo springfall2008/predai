@@ -187,13 +187,22 @@ class Prophet:
         if regressors:
             for reg in regressors:
                 self.model.add_lagged_regressor(reg, n_lags=reg_n_lags)
-        # ‼ guarantee datetime homogeneity
+
+        # ─── ensure pure datetime, then drop any duplicate ds rows ───
         dataset = ensure_datetime(dataset)
+        dataset = (
+            dataset
+            .sort_values("ds")
+            .drop_duplicates(subset="ds", keep="last")
+            .reset_index(drop=True)
+        )
+
         self.metrics = self.model.fit(dataset, freq=f"{self.period}min", progress=None)
         self.df_future = self.model.make_future_dataframe(
             dataset, n_historic_predictions=True, periods=future_periods
         )
         self.forecast = self.model.predict(self.df_future)
+
 
     async def save_prediction(
         self,
