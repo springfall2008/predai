@@ -281,7 +281,7 @@ class Database:
             if ts not in prev_stamps:
                 prev.loc[len(prev)] = {"ds": row["ds"], "y": val}
                 self.cur.execute(
-                    f"INSERT INTO {table} (timestamp, value) VALUES ('{ts}', {val})"
+                    f"INSERT OR IGNORE INTO {table} (timestamp, value) VALUES ('{ts}', {val})"
                 )
                 added += 1
         self.con.commit()
