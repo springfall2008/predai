@@ -283,18 +283,43 @@ class Database:
         return ensure_datetime(hist)
 
     async def store_history(self, table: str, new_rows: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
+        """
+        Store the history in the database, skipping duplicates.
+        Normalises both DataFrames so that 'ds' is tz‑naïve datetime64[ns].
+        """
+        # ── Step 1: force both DataFrames to tz‑naïve datetime64 ──
+        prev = prev.copy()
+        prev["ds"] = (
+            pd.to_datetime(prev["ds"], utc=True, errors="coerce")
+              .dt.tz_convert(None)
+        )
+
+        new_rows = new_rows.copy()
+        new_rows["ds"] = (
+            pd.to_datetime(new_rows["ds"], utc=True, errors="coerce")
+              .dt.tz_convert(None)
+        )
+
         added = 0
         prev_stamps = set(prev["ds"].astype(str))
         for _, row in new_rows.iterrows():
-            ts, val = str(row["ds"]), row["y"]
-            if ts not in prev_stamps:
-                prev.loc[len(prev)] = {"ds": row["ds"], "y": val}
-                self.cur.execute(
-                    f"INSERT OR IGNORE INTO {table} (timestamp, value) VALUES ('{ts}', {val})"
-                )
+            ts: pd.Timestamp = row["ds"]
+            val: float = row["y"]
+            # use INSERT OR IGNORE to skip existing timestamps
+            self.cur.execute(
+                f"INSERT OR IGNORE INTO {table} (timestamp, value) VALUES (?, ?)",
+                (ts.strftime("%Y-%m-%d %H:%M:%S"), val),
+            )
+            if ts.strftime("%Y-%m-%d %H:%M:%S") not in prev_stamps and self.cur.rowcount > 0:
+                # now that prev['ds'] is datetime64, assigning ts (a pd.Timestamp) is safe
+                prev.loc[len(prev)] = {"ds": ts, "y": val}
                 added += 1
+
         self.con.commit()
+        if added:
+            print(f"Added {added} new rows to {table}")
         return prev
+
 
 
 # ────────────────────────────────────────────────────────────────
