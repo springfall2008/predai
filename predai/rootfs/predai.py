@@ -203,6 +203,23 @@ class Prophet:
             .reset_index(drop=True)
         )
 
+        min_rows = self.model.n_lags + self.model.n_forecasts
+        if len(dataset) < min_rows:
+            print(
+                f"Not enough data for training ({len(dataset)} rows, need {min_rows}), using naive forecast"
+            )
+            last_val = float(dataset["y"].iloc[-1]) if not dataset.empty else 0.0
+            last_ts = dataset["ds"].iloc[-1] if not dataset.empty else datetime.now(timezone.utc)
+            self.df_future = dataset[["ds"]].copy()
+            self.df_future["yhat1"] = dataset.get("y", [])
+            self.df_future["y"] = dataset.get("y", [])
+            for i in range(1, future_periods + 1):
+                ts = last_ts + timedelta(minutes=self.period * i)
+                self.df_future.loc[len(self.df_future)] = {"ds": ts, "yhat1": last_val, "y": np.nan}
+            self.forecast = self.df_future.copy()
+            self.metrics = {}
+            return
+
         self.metrics = self.model.fit(dataset, freq=f"{self.period}min", progress=None)
         self.df_future = self.model.make_future_dataframe(
             dataset, n_historic_predictions=True, periods=future_periods
