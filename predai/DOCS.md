@@ -69,6 +69,8 @@ that history for training. You can browse the data using an SQL Lite viewer on y
   - **reset_low/reset_high** - For incrementing sensors if the sensor goes above **reset_high** and then falls below **reset_low** then its considered a reset even
   if it never goes to 0.
   - **country** - When set adds in the specified countries holidays (see https://python-holidays.readthedocs.io/en/latest/)
+  - **covariates** - List of sensor entity_ids used as lagged regressors
+  - **future_covariates** - List of sensor entity_ids that provide values for both history and future
 
 A new sensor with the name **name**_prediction will be created, this will contain two series:
   - **results** contains the time series of the predictions, starts in the past so you can plot corrolation
