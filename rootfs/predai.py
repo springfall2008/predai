@@ -1,349 +1,455 @@
-# -*- coding: utf-8 -*-
-"""PredAI – covariate‑enabled fork (July 2025)
-Fully self‑contained; place as `/config/predai.py` in your HA add-on fork.
-Features:
- • Future & lagged covariates via `covariates:` block
- • YAML‑driven seasonality flags & mode
- • SQLite cache for restart resilience
- • Verbose logging for traceability
-Requires NeuralProphet ≥ 0.6.3, HA Supervisor token in ENV or YAML.
-"""
-from __future__ import annotations
-import asyncio
-import math
-import os
+from typing import Any
+import pandas as pd
+import numpy as np
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Tuple, List
-
-import pandas as pd
-import requests
-import yaml
 from neuralprophet import NeuralProphet, set_log_level
-
-# ---------------------------------------------------------------------------
-# Constants & helpers
-# ---------------------------------------------------------------------------
+import os
+import aiohttp
+import requests
+import asyncio
+import json
+import ssl
+import math
+import yaml
 
 TIMEOUT = 240
-FMT = "%Y-%m-%dT%H:%M:%S%z"
-FMT_DOT = "%Y-%m-%dT%H:%M:%S.%f%z"
-DB_FILE = "/config/predai.db"
-CONF_FILE = "/config/predai.yaml"
+TIME_FORMAT_HA = "%Y-%m-%dT%H:%M:%S%z"
+TIME_FORMAT_HA_DOT = "%Y-%m-%dT%H:%M:%S.%f%z"
 
-
-def ha_ts_to_dt(ts: str | None) -> datetime | None:
-    for fmt in (FMT, FMT_DOT):
+def timestr_to_datetime(timestamp):
+    """
+    Convert a Home Assistant timestamp string to a datetime object.
+    """
+    try:
+        start_time = datetime.strptime(timestamp, TIME_FORMAT_HA)
+    except ValueError:
         try:
-            return datetime.strptime(ts or "", fmt).replace(second=0, microsecond=0)
-        except (ValueError, TypeError):
-            continue
-    return None
+            start_time = datetime.strptime(timestamp, TIME_FORMAT_HA_DOT)
+        except ValueError:
+            start_time = None
+    if start_time:
+        start_time = start_time.replace(second=0, microsecond=0)
+    return start_time
 
 
-def floor_period(dt: datetime, period: int) -> datetime:
-    mins = dt.minute - (dt.minute % period)
-    return dt.replace(minute=mins, second=0, microsecond=0)
+class HAInterface():
+    def __init__(self, ha_url, ha_key):
 
-# ---------------------------------------------------------------------------
-# Home‑Assistant REST helper
-# ---------------------------------------------------------------------------
+        if ha_url:
+            self.ha_url = ha_url
+        else:
+            self.ha_url = "http://supervisor/core"
 
-class HAInterface:
-    def __init__(self, url: str | None, token: str | None):
-        self.ha_url = url or "http://supervisor/core"
-        self.ha_key = token or os.getenv("SUPERVISOR_TOKEN")
+        if ha_key:
+            self.ha_key = ha_key
+        else:
+            self.ha_key = os.environ.get("SUPERVISOR_TOKEN")
+
         if not self.ha_key:
-            raise SystemExit("No Home‑Assistant token provided.")
-        print(f"HA URL → {self.ha_url}")
+            print("No Home Assistant key found, exiting")
+            exit(1)
+        print("HA Interface started key {} url {}".format(self.ha_key, self.ha_url))
 
-    async def _call(self, ep: str, *, params=None, json_in=None, post=False) -> Any:
-        url = self.ha_url + ep
-        hdr = {"Authorization": f"Bearer {self.ha_key}", "Content-Type": "application/json", "Accept": "application/json"}
-        fn = requests.post if post else requests.get
-        try:
-            resp = await asyncio.to_thread(fn, url, headers=hdr, params=params, json=json_in, timeout=TIMEOUT)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as exc:
-            print(f"REST {url} → {exc}")
-            return None
+    async def get_events(self):
+        res = await self.api_call("/api/events")
+        return res
 
-    async def get_history(self, entity: str, now: datetime, *, days: int) -> Tuple[List[dict], datetime, datetime]:
+    async def get_history(self, sensor, now, days=7):
+        """
+        Get the history for a sensor from Home Assistant.
+
+        :param sensor: The sensor to get the history for.
+        :return: The history for the sensor.
+        """
         start = now - timedelta(days=days)
-        data = await self._call(
-            f"/api/history/period/{start.strftime(FMT)}",
-            params={"filter_entity_id": entity, "end_time": now.strftime(FMT)}
-        )
-        if not data:
-            return [], None, None
-        arr = data[0]
-        s = ha_ts_to_dt(arr[0]["last_updated"])
-        e = ha_ts_to_dt(arr[-1]["last_updated"])
-        print(f"History {entity}: {s} → {e} ({len(arr)} pts)")
-        return arr, s, e
+        end = now
+        print("Getting history for sensor {} start {} end {}".format(sensor, start.strftime(TIME_FORMAT_HA), end.strftime(TIME_FORMAT_HA)))
+        res = await self.api_call("/api/history/period/{}".format(start.strftime(TIME_FORMAT_HA)), {"filter_entity_id": sensor, "end_time": end.strftime(TIME_FORMAT_HA)})
+        if res:
+            res = res[0]
+            start = timestr_to_datetime(res[0]["last_updated"])
+            end = timestr_to_datetime(res[-1]["last_updated"])
+        print("History for sensor {} starts at {} ends at {}".format(sensor, start, end))
+        return res, start, end
 
-    async def set_state(self, entity: str, state: Any, attrs: dict | None = None) -> None:
-        await self._call(
-            f"/api/states/{entity}",
-            json_in={"state": state, "attributes": attrs or {}},
-            post=True
-        )
+    async def get_state(self, entity_id=None, default=None, attribute=None):
+        """
+        Get state of an entity in Home Assistant.
+        """
+        item = await self.api_call("/api/states/{}".format(entity_id))
+        if not item:
+            return default
+        elif attribute:
+            attributes = item.get("attributes", {})
+            return attributes.get(attribute, default)
+        else:
+            return item.get("state", default)
 
-# ---------------------------------------------------------------------------
-# SQLite cache
-# ---------------------------------------------------------------------------
+    async def set_state(self, entity_id, state, attributes=None):
+        """
+        Set the state of an entity in Home Assistant.
+        """
+        data = {"state": state}
+        if attributes:
+            data["attributes"] = attributes
+        await self.api_call("/api/states/{}".format(entity_id), data, post=True)
 
-class Database:
-    def __init__(self):
-        self.con = sqlite3.connect(DB_FILE)
-        self.cur = self.con.cursor()
+    async def api_call(self, endpoint, datain=None, post=False):
+        """
+        Make an API call to Home Assistant.
 
-    async def ensure(self, table: str) -> None:
-        self.cur.execute(f"CREATE TABLE IF NOT EXISTS {table} (timestamp TEXT PRIMARY KEY, value REAL)")
-        self.con.commit()
+        :param endpoint: The API endpoint to call.
+        :param datain: The data to send in the body of the request.
+        :param post: True if this is a POST request, False for GET.
+        :return: The response from the API.
+        """
+        url = self.ha_url + endpoint
+        headers = {
+            "Authorization": "Bearer " + self.ha_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if post:
+            if datain:
+                response = await asyncio.to_thread(requests.post, url, headers=headers, json=datain, timeout=TIMEOUT)
+            else:
+                response = await asyncio.to_thread(requests.post, url, headers=headers, timeout=TIMEOUT)
+        else:
+            if datain:
+                response = await asyncio.to_thread(requests.get, url, headers=headers, params=datain, timeout=TIMEOUT)
+            else:
+                response = await asyncio.to_thread(requests.get, url, headers=headers, timeout=TIMEOUT)
+        try:
+            data = response.json()
+        except requests.exceptions.JSONDecodeError:
+            print("Failed to decode response from {}".format(url))
+            data = None
+        except (requests.Timeout, requests.exceptions.ReadTimeout):
+            print("Timeout from {}".format(url))
+            data = None
+        return data
 
-    async def read(self, table: str) -> pd.DataFrame:
-        self.cur.execute(f"SELECT * FROM {table} ORDER BY timestamp")
-        rows = self.cur.fetchall()
-        return pd.DataFrame(rows, columns=["ds", "y"])
-
-    async def merge(self, table: str, df: pd.DataFrame, prev: pd.DataFrame | None) -> pd.DataFrame:
-        existing = set(prev["ds"].tolist()) if prev is not None and not prev.empty else set()
-        added = 0
-        for _, r in df.iterrows():
-            ts, val = str(r["ds"]), r["y"]
-            if ts in existing:
-                continue
-            self.cur.execute(f"INSERT INTO {table} VALUES (?, ?)", (ts, val))
-            added += 1
-        self.con.commit()
-        if added:
-            print(f"DB {table}: +{added} rows")
-        return pd.concat([prev, df]).drop_duplicates("ds") if prev is not None else df
-
-    async def prune(self, table: str, max_age: int) -> None:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age)).strftime("%Y-%m-%d %H:%M:%S%z")
-        self.cur.execute(f"DELETE FROM {table} WHERE timestamp < ?", (cutoff,))
-        self.con.commit()
-
-# ---------------------------------------------------------------------------
-# NeuralProphet wrapper with covariates
-# ---------------------------------------------------------------------------
-
-class NPWrapper:
-    def __init__(self, period: int):
+class Prophet:
+    def __init__(self, period=30):
         set_log_level("ERROR")
         self.period = period
-        self.model: NeuralProphet | None = None
-        self.forecast: pd.DataFrame | None = None
 
-    async def build_df(
-        self,
-        raw: List[dict],
-        start: datetime,
-        end: datetime,
-        *,
-        inc: bool = False,
-        max_inc: float = 0,
-        reset_low: float = 0,
-        reset_high: float = 0
-    ) -> pd.DataFrame:
-        df = pd.DataFrame(columns=["ds", "y"])
-        t = floor_period(start, self.period)
-        idx, tot, last = 0, 0.0, None
-        while t <= end and idx < len(raw):
+    async def process_dataset(self, sensor_name, new_data, start_time, end_time, incrementing=False, max_increment=0, reset_low=0.0, reset_high=0.0):
+        """
+        Store the data in the dataset for training.
+        """
+        dataset = pd.DataFrame(columns=["ds", "y"])
+        
+        timenow = start_time
+        timenow = timenow.replace(second=0, microsecond=0, minute=0)
+        data_index = 0
+        value = 0
+        data_len = len(new_data)
+        total = 0
+        last_value = None
+
+        print("Process dataset for sensor {} start {} end {} incrementing {} reset_low {} reset_high {}".format(sensor_name, start_time, end_time, incrementing, reset_low, reset_high))
+        while timenow <= end_time and data_index < data_len:
             try:
-                val = float(raw[idx]["state"])
+                value = float(new_data[data_index]["state"])
+                if last_value is None:
+                    last_value = value
             except ValueError:
-                idx += 1
-                continue
-            if last is None:
-                last = val
-            upd = ha_ts_to_dt(raw[idx]["last_updated"])
-            if not upd or upd < t:
-                idx += 1
-                continue
-            if inc:
-                if val < last < reset_high and val < reset_low:
-                    tot += val
+                if last_value is not None:
+                    value = last_value
                 else:
-                    if max_inc and abs(val - last) > max_inc:
-                        val = last
-                    tot += max(val - last, 0)
-            last = val
-            df.loc[len(df)] = {"ds": t, "y": tot if inc else val}
-            t += timedelta(minutes=self.period)
-        return df
+                    data_index += 1
+                    continue
 
-    async def train(
-        self,
-        base: pd.DataFrame,
-        periods: int,
-        *,
-        n_lags: int = 0,
-        country: str | None = None,
-        seasonality_mode: str = "additive",
-        daily: bool = True,
-        weekly: bool = True,
-        yearly: bool = False,
-        covars: Dict[str, Tuple[pd.DataFrame, bool]] | None = None
-    ) -> None:
-        self.model = NeuralProphet(
-            n_lags=n_lags,
-            n_forecasts=1,
-            seasonality_mode=seasonality_mode,
-            daily_seasonality=daily,
-            weekly_seasonality=weekly,
-            yearly_seasonality=yearly
-        )
+            last_updated = new_data[data_index]["last_updated"]
+            start_time = timestr_to_datetime(last_updated)
+
+            if incrementing:
+                # Reset?
+                if value < last_value and value < reset_low and last_value > reset_high:
+                    total = total + value
+                else:
+                    # Filter on max increment
+                    if max_increment and abs(value - last_value) > max_increment:
+                        value = last_value  # Avoid spikes
+
+                    # Update total
+                    total = max(total + value - last_value, 0)
+            last_value = value
+        
+            if not start_time or start_time < timenow:
+                data_index += 1
+                continue
+
+            real_value = value
+            if incrementing:
+                real_value = max(0, total)
+                total = 0
+            dataset.loc[len(dataset)] = {"ds": timenow, "y": real_value}
+            timenow = timenow + timedelta(minutes=self.period)
+
+        print(dataset)
+        # dataset.to_csv('/config/{}.csv'.format(sensor_name), index=False) 
+
+        return dataset, value
+    
+    async def train(self, dataset, future_periods, n_lags=0, country=None):
+        """
+        Train the model on the dataset.
+        """
+        self.model = NeuralProphet(n_lags=n_lags, yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=True)
         if country:
+            print("Adding country holidays for {}".format(country))
             self.model.add_country_holidays(country)
-        if covars:
-            print(f"Covariates: {list(covars.keys())}")
-            for name, (df_c, known) in covars.items():
-                reg_fn = self.model.add_future_regressor if known else self.model.add_lagged_regressor
-                reg_fn(name)
-                df2 = df_c.rename(columns={"y": name})
-                base = base.merge(df2, on="ds", how="left")
-                na0 = base[name].isna().sum()
-                base[name] = base[name].ffill()
-                print(f" • {name}: NaN {na0} → {base[name].isna().sum()}")
-        self.model.fit(base, freq=f"{self.period}min", progress=None)
-        fut = self.model.make_future_dataframe(base, periods=periods, n_historic_predictions=True)
-        if covars:
-            for name in covars.keys():
-                if name in fut.columns:
-                    fut[name] = fut[name].ffill()
-        self.forecast = self.model.predict(fut)
+        # Fit the model on the dataset (this might take a bit)
+        self.metrics = self.model.fit(dataset, freq=(str(self.period) + "min"), progress=None)
+        # Create a new dataframe reaching 96 into the future for our forecast, n_historic_predictions also shows historic data
+        self.df_future = self.model.make_future_dataframe(dataset, n_historic_predictions=True, periods=future_periods)
+        self.forecast = self.model.predict(self.df_future)
+        print(self.forecast)
+ 
+    async def save_prediction(self, entity, now, interface, start, incrementing=False, reset_daily=False, units="", days=7):
+        """
+        Save the prediction to Home Assistant.
+        """
+        pred = self.forecast
+        total = 0
+        total_org = 0
+        timeseries = {}
+        timeseries_org = {}
 
-    async def publish(
-        self,
-        iface: HAInterface,
-        entity: str,
-        now: datetime,
-        *,
-        inc: bool = False,
-        reset_daily: bool = False,
-        units: str = "",
-        history_days: int = 7
-    ) -> None:
-        if self.forecast is None:
-            return
-        res, src, tot, tot_src = {}, {}, 0.0, 0.0
-        for _, r in self.forecast.iterrows():
-            ts: datetime = r["ds"]
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            diff = ts - now
-            if diff.days < -history_days:
-                continue
-            label = (now + diff).strftime(FMT)
-            yh = float(r["yhat1"])
-            y_true = r.get("y", math.nan)
-            if ts <= now and reset_daily and ts.hour == ts.minute == 0:
-                tot, tot_src = 0.0, 0.0
-            if inc:
-                tot += yh
-                res[label] = round(tot, 2)
-                if not math.isnan(y_true):
-                    tot_src += y_true
-                    src[label] = round(tot_src, 2)
+        for index, row in pred.iterrows():
+            ptimestamp = row["ds"].tz_localize(timezone.utc)
+            diff = ptimestamp - now
+            timestamp = now + diff
+                
+            time = timestamp.strftime(TIME_FORMAT_HA)
+            value = row["yhat1"]
+            value_org = row["y"]
+
+            # Daily reset?
+            if timestamp <= now:
+                if reset_daily and timestamp.hour == 0 and timestamp.minute == 0:
+                    total = 0
+                    total_org = 0
+
+            total += value
+            if not math.isnan(value_org):
+                total_org += value_org
             else:
-                res[label] = round(yh, 2)
-                if not math.isnan(y_true):
-                    src[label] = round(y_true, 2)
-        final = tot if inc else yh
-        attrs = {"last_updated": str(now), "unit_of_measurement": units, "state_class": "measurement", "results": res, "source": src}
-        await iface.set_state(f"{entity}_prediction", final, attrs)
-        print(f"Publish → {entity}_prediction ({len(res)} points)")
+                value_org = None
 
-# ---------------------------------------------------------------------------
-# Helpers: subtract & sensor build
-# ---------------------------------------------------------------------------
-
-async def subtract_set(base: pd.DataFrame, sub: pd.DataFrame, *, inc: bool = False) -> pd.DataFrame:
-    merged = base.merge(sub, on="ds", how="left", suffixes=("", "_sub"))
-    merged["y_sub"].fillna(0, inplace=True)
-    merged["y"] = merged.apply(lambda row: max(row["y"] - row["y_sub"], 0) if inc else row["y"] - row["y_sub"], axis=1)
-    return merged[["ds", "y"]]
-
-async def build_sensor_history(
-    iface: HAInterface,
-    npw: NPWrapper,
-    cfg: Dict[str, Any],
-    now: datetime,
-    use_db: bool,
-) -> Tuple[pd.DataFrame, datetime, datetime]:
-    raw, start, end = await iface.get_history(cfg["name"], now, days=cfg.get("days", 7))
-    df = await npw.build_df(
-        raw, start, end,
-        inc=cfg.get("incrementing", False),
-        max_inc=cfg.get("max_increment", 0),
-        reset_low=cfg.get("reset_low", 0),
-        reset_high=cfg.get("reset_high", 0)
-    )
-    if use_db:
-        table = cfg["name"].replace(".", "_")
-        db = Database()
-        await db.ensure(table)
-        prev = await db.read(table)
-        df = await db.merge(table, df, prev)
-        await db.prune(table, cfg.get("max_age", 365))
-    return df, start, end
-
-# ---------------------------------------------------------------------------
-# Main loop
-# ---------------------------------------------------------------------------
-
-async def main():
-    config = yaml.safe_load(open(CONF_FILE)) or {}
-    iface = HAInterface(config.get("ha_url"), config.get("ha_key"))
-    while True:
-        print("Configuration loaded")
-        now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-        for cfg in config.get("sensors", []):
-            name = cfg.get("name")
-            if not name:
+            # Avoid too much history in HA
+            if diff.days < -days:
                 continue
-            print(f"\n=== {name} @ {now} ===")
-            npw = NPWrapper(cfg.get("interval", 30))
-            df_base, start, end = await build_sensor_history(iface, npw, cfg, now, use_db=cfg.get("database", True))
-            covars: Dict[str, Tuple[pd.DataFrame, bool]] = {}
-            for cov in cfg.get("covariates", []):
-                df_cov, _, _ = await build_sensor_history(iface, npw, cov, now, use_db=False)
-                covars[cov["name"]] = (df_cov, cov.get("known_in_advance", False))
-            # subtraction
-            if cfg.get("subtract"):
-                subs = cfg["subtract"] if isinstance(cfg["subtract"], list) else [cfg["subtract"]]
-                for sub in subs:
-                    df_sub, _, _ = await build_sensor_history(iface, npw, {"name": sub, **cfg}, now, use_db=False)
-                    df_base = await subtract_set(df_base, df_sub, inc=cfg.get("incrementing", False))
-            # train & predict
-            await npw.train(
-                df_base,
-                cfg.get("future_periods", 96),
-                n_lags=cfg.get("n_lags", 0),
-                country=cfg.get("country"),
-                seasonality_mode=cfg.get("seasonality_mode", "additive"),
-                daily=cfg.get("daily_seasonality", True),
-                weekly=cfg.get("weekly_seasonality", True),
-                yearly=cfg.get("yearly_seasonality", False),
-                covars=covars
-            )
-            await npw.publish(
-                iface,
-                name,
-                now,
-                inc=cfg.get("incrementing", False),
-                reset_daily=cfg.get("reset_daily", False),
-                units=cfg.get("units", ""),
-                history_days=cfg.get("export_days", cfg.get("days", 7))
-            )
-        # mark run
-        await iface.set_state("sensor.predai_last_run", str(now), {"unit_of_measurement": "time"})
-        # sleep
-        await asyncio.sleep(config.get("update_every", 30) * 60)
+       
+            if incrementing:
+                timeseries[time] = round(total, 2)
+                if value_org:
+                    timeseries_org[time] = round(total_org, 2)
+            else:
+                timeseries[time] = round(value, 2)
+                if value_org:
+                    timeseries_org[time] = round(value_org, 2)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+        final = total if incrementing else value
+        attributes = {"last_updated": str(now), "unit_of_measurement": units, "state_class" : "measurement", "results" : timeseries, "source" : timeseries_org}
+        print("Saving prediction to {} last_update {}".format(entity, str(now)))
+        await interface.set_state(entity, state=round(final,2), attributes=attributes)
+
+async def subtract_set(dataset, subset, now, incrementing=False):
+    """
+    Subtract the subset from the dataset.
+    """
+    pruned = pd.DataFrame(columns=["ds", "y"])
+    count = 0
+    for index, row in dataset.iterrows():
+        ds = row["ds"]
+        value = row["y"]
+        car_value = 0
+
+        car_row = subset.loc[subset["ds"] == ds]
+        if not car_row.empty:
+            car_value = car_row["y"].values[0]
+            count += 1
+
+        if incrementing:
+            value = max(value - car_value, 0)
+        else:
+            value = value - car_value
+        pruned.loc[len(pruned)] = {"ds": ds, "y": value}
+    print("Subtracted {} values into new set: {}".format(count, pruned))
+    return pruned
+
+class Database():
+    def __init__(self):
+        self.con = sqlite3.connect('/config/predai.db')
+        self.cur = self.con.cursor()
+
+    async def cleanup_table(self, table_name, max_age):
+        """
+        Cleanup the database table by removing all entries older than max_age days.
+        """
+        now_utc = datetime.now(timezone.utc).astimezone()
+        oldest_stamp = (now_utc - timedelta(days=max_age)).strftime("%Y-%m-%d %H:%M:%S%z")
+        print("Cleanup table {} older than {}".format(table_name, oldest_stamp))
+
+        self.cur.execute(
+            "DELETE FROM {} WHERE timestamp < \"{}\"".format(table_name, oldest_stamp)
+        )
+        self.con.commit()
+
+    async def create_table(self, table):
+        """
+        Create a table in the database by table if it does not exist.
+        """
+        print("Create table {}".format(table))
+        self.cur.execute("CREATE TABLE IF NOT EXISTS {} (timestamp TEXT PRIMARY KEY, value REAL)".format(table))
+        self.con.commit()
+
+    async def get_history(self, table):
+        """
+        Get the history from the database, sorted by timestamp.
+        Returns a Dataframe with the history data.
+        """
+        self.cur.execute("SELECT * FROM {} ORDER BY timestamp".format(table))
+        rows = self.cur.fetchall()
+        history = pd.DataFrame(columns=["ds", "y"])
+        if not rows:
+            return history
+        for row in rows:
+            timestamp = row[0]
+            value = row[1]
+            history.loc[len(history)] = {"ds": timestamp, "y": value}
+        return history
+
+    async def store_history(self, table, history, prev=None):
+        """
+        Store the history in the database.
+        Only the data associated with TIMESTAMPs not already in the database will be stored.
+        Returns the updated history DataFrame.
+
+        :param table: The table to store the history in.
+        :param history: The history data as a DataFrame.
+        """
+        added_rows = 0
+        prev_values = prev["ds"].values
+        prev_values = prev_values.tolist()
+
+        for index, row in history.iterrows():
+            timestamp = str(row["ds"])
+            value = row["y"]
+            if timestamp not in prev_values:
+                prev.loc[len(prev)] = {"ds": timestamp, "y": value}
+                self.cur.execute("INSERT INTO {} (timestamp, value) VALUES ('{}', {})".format(table, timestamp, value))
+                added_rows += 1
+        self.con.commit()
+        print("Added {} rows to database table {}".format(added_rows, table))
+        return prev
+
+async def print_dataset(name, dataset):
+    count = 0
+    for index, row in dataset.iterrows():
+        timestamp = str(row["ds"])
+        value = row["y"]
+        print("Got dataset {} row {} {}".format(name, timestamp, value))
+        count += 1
+        if count > 24:
+            break
+
+async def get_history(interface, nw, sensor_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high, max_age):
+    """
+    Get history from HA, combine it with the database if use_db is True.
+    """
+    dataset, start, end = await interface.get_history(sensor_name, now, days=days)
+    dataset, last_dataset_value = await nw.process_dataset(sensor_name, dataset, start, end, incrementing=incrementing, max_increment=max_increment, reset_low=reset_low, reset_high=reset_high)
+
+    if use_db:
+        table_name = sensor_name.replace(".", "_")  # SQLite does not like dots in table names
+        db = Database()
+        await db.create_table(table_name)
+        prev = await db.get_history(table_name)
+        dataset = await db.store_history(table_name, dataset, prev)
+        await db.cleanup_table(table_name, max_age)
+        print("Stored dataset in database and retrieved full history from database length {}".format(len(dataset)))
+    return dataset, start, end
+    
+async def main():
+    """
+    Main function for the prediction AI.
+    """
+    config = yaml.safe_load(open("/config/predai.yaml"))
+    interface = HAInterface(config.get("ha_url", None), config.get("ha_key", None))
+    while True:
+        config = yaml.safe_load(open("/config/predai.yaml"))
+        if not config:
+            print("WARN: predai.yaml is missing, no work to do")
+        else:
+            print("Configuration loaded")
+            update_every = config.get('update_every', 30)
+            sensors = config.get("sensors", [])
+            for sensor in sensors:
+                sensor_name = sensor.get("name", None)
+                subtract_names = sensor.get("subtract", None)
+                days = sensor.get("days", 7)
+                export_days = sensor.get("export_days", days)
+                incrementing = sensor.get("incrementing", False)
+                reset_daily = sensor.get("reset_daily", False)
+                interval = sensor.get("interval", 30)
+                units = sensor.get("units", "")
+                future_periods = sensor.get("future_periods", 96)
+                use_db = sensor.get("database", True)
+                reset_low = sensor.get("reset_low", 1.0)
+                reset_high = sensor.get("reset_high", 2.0)
+                max_increment = sensor.get("max_increment", 0)
+                n_lags = sensor.get("n_lags", 0)
+                country = sensor.get("country", None)
+                max_age = sensor.get("max_age", 365)
+
+                if not sensor_name:
+                    continue
+
+                
+                nw = Prophet(interval)
+                now = datetime.now(timezone.utc).astimezone()
+                now=now.replace(second=0, microsecond=0, minute=0)
+                
+
+                print("Update at time {} Processing sensor {} incrementing {} max_increment {} reset_daily {} interval {} days {} export_days {} subtract {}".format(now, sensor_name, incrementing, max_increment, reset_daily, interval, days, export_days, subtract_names))
+
+                # Get the data
+                dataset, start, end = await get_history(interface, nw, sensor_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high, max_age)
+
+                # Get the subtract data
+                subtract_data_list = []
+                if subtract_names:
+                    if isinstance(subtract_names, str):
+                        subtract_names = [subtract_names]
+                    for subtract_name in subtract_names:
+                        subtract_data, sub_start, sub_end = await get_history(interface, nw, subtract_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high, max_age)
+                        subtract_data_list.append(subtract_data)
+
+                # Subtract the data
+                if subtract_data_list:
+                    print("Subtracting data")
+                    for subtract_data in subtract_data_list:
+                        dataset = await subtract_set(dataset, subtract_data, now, incrementing=incrementing)
+
+                # Start training
+                await nw.train(dataset, future_periods, n_lags=n_lags, country=country)
+
+                # Save the prediction
+                await nw.save_prediction(sensor_name + "_prediction", now, interface, start=end, incrementing=incrementing, reset_daily=reset_daily, units=units, days=export_days)
+
+        time_now = datetime.now(timezone.utc).astimezone()
+        await interface.set_state("sensor.predai_last_run", state=str(time_now), attributes={"unit_of_measurement": "time"})
+        print("Waiting for {} minutes at time {}".format(update_every, datetime.now(timezone.utc).astimezone()))
+        for n in range(update_every):
+            last_run = await interface.get_state("sensor.predai_last_run")
+            if last_run is None:
+                print("Restarting PredAI as last-run time has gone")
+                break
+            await asyncio.sleep(60)
+
+asyncio.run(main())
