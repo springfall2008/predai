@@ -393,7 +393,23 @@ async def get_history(
         prev = await db.get_history(table)
         dataset = await db.store_history(table, dataset, prev)
         await db.cleanup_table(table, max_age)
+
     return ensure_datetime(dataset), start, end
+
+
+async def subtract_set(
+    base: pd.DataFrame,
+    sub: pd.DataFrame,
+    *,
+    incrementing: bool = False,
+) -> pd.DataFrame:
+    """Subtract one dataset from another on timestamp."""
+    df = pd.merge(base, sub, on="ds", how="left", suffixes=("", "_sub"))
+    df["y_sub"] = df["y_sub"].fillna(0)
+    df["y"] = df["y"] - df["y_sub"]
+    if incrementing:
+        df["y"] = df["y"].clip(lower=0)
+    return df[["ds", "y"]]
 
 
 # ────────────────────────────────────────────────────────────────
