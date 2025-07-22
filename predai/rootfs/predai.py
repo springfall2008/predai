@@ -428,10 +428,17 @@ async def subtract_set(
 #  Main loop
 # ────────────────────────────────────────────────────────────────
 async def main():
-    cfg = yaml.safe_load(open("/config/predai.yaml"))
+    cfg_path = "/config/predai.yaml"
+    print(f"Loading configuration from {cfg_path}")
+    cfg = yaml.safe_load(open(cfg_path))
+    if cfg:
+        print(f"Loaded {len(cfg.get('sensors', []))} sensors from configuration")
     interface = HAInterface(cfg.get("ha_url"), cfg.get("ha_key"))
     while True:
-        cfg = yaml.safe_load(open("/config/predai.yaml"))
+        print(f"Loading configuration from {cfg_path}")
+        cfg = yaml.safe_load(open(cfg_path))
+        if cfg:
+            print(f"Loaded {len(cfg.get('sensors', []))} sensors from configuration")
         if not cfg:
             await asyncio.sleep(60)
             continue
