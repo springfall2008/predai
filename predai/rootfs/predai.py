@@ -254,7 +254,11 @@ class Prophet:
         timeseries_org: Dict[str, float] = {}
 
         for _, row in pred.iterrows():
-            ptimestamp = row["ds"].tz_localize(timezone.utc)
+            ts = row["ds"]
+            if ts.tzinfo is None:
+                ptimestamp = ts.tz_localize(timezone.utc)
+            else:
+                ptimestamp = ts.tz_convert(timezone.utc)
             diff = ptimestamp - now
             timestamp = now + diff
             if diff.days < -days:
