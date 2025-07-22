@@ -12,7 +12,6 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from neuralprophet import NeuralProphet, set_log_level
 import os
-import aiohttp
 import requests
 import asyncio
 import math
