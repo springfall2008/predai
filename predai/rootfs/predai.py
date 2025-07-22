@@ -134,6 +134,7 @@ class Prophet:
         idx = 0
         last_val = None
         total = 0
+        value = 0.0
         while timenow <= end_time and idx < len(new_data):
             try:
                 value = float(new_data[idx]["state"])
