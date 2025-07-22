@@ -358,6 +358,18 @@ class Database:
 
 
 
+async def subtract_set(base: pd.DataFrame, sub: pd.DataFrame, *, inc: bool = False) -> pd.DataFrame:
+    """Subtract one dataset from another, optionally flooring at zero for incrementing sensors."""
+    merged = base.merge(sub, on="ds", how="left", suffixes=("", "_sub"))
+    merged["y_sub"].fillna(0, inplace=True)
+    merged["y"] = merged.apply(
+        lambda row: max(row["y"] - row["y_sub"], 0) if inc else row["y"] - row["y_sub"],
+        axis=1,
+    )
+    return merged[["ds", "y"]]
+
+
+
 # ────────────────────────────────────────────────────────────────
 #  History acquisition
 # ────────────────────────────────────────────────────────────────
