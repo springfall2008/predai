@@ -134,6 +134,7 @@ class Prophet:
         idx = 0
         last_val = None
         total = 0
+        value = 0.0
         while timenow <= end_time and idx < len(new_data):
             try:
                 value = float(new_data[idx]["state"])
@@ -175,6 +176,8 @@ class Prophet:
         country: str | None = None,
         regressors: List[str] | None = None,
         reg_n_lags: int = 0,
+        future_regressors: List[str] | None = None,
+        future_values: Dict[str, float] | None = None,
     ):
         self.model = NeuralProphet(
             n_lags=n_lags,
@@ -187,6 +190,9 @@ class Prophet:
         if regressors:
             for reg in regressors:
                 self.model.add_lagged_regressor(reg, n_lags=reg_n_lags)
+        if future_regressors:
+            for reg in future_regressors:
+                self.model.add_future_regressor(reg)
 
         # ─── ensure pure datetime, then drop any duplicate ds rows ───
         dataset = ensure_datetime(dataset)
@@ -197,10 +203,36 @@ class Prophet:
             .reset_index(drop=True)
         )
 
+        min_rows = self.model.n_lags + self.model.n_forecasts
+        if len(dataset) < min_rows:
+            print(
+                f"Not enough data for training ({len(dataset)} rows, need {min_rows}), using naive forecast"
+            )
+            last_val = float(dataset["y"].iloc[-1]) if not dataset.empty else 0.0
+            last_ts = dataset["ds"].iloc[-1] if not dataset.empty else datetime.now(timezone.utc)
+            self.df_future = dataset[["ds"]].copy()
+            self.df_future["yhat1"] = dataset.get("y", [])
+            self.df_future["y"] = dataset.get("y", [])
+            for i in range(1, future_periods + 1):
+                ts = last_ts + timedelta(minutes=self.period * i)
+                self.df_future.loc[len(self.df_future)] = {"ds": ts, "yhat1": last_val, "y": np.nan}
+            self.forecast = self.df_future.copy()
+            self.metrics = {}
+            return
+
         self.metrics = self.model.fit(dataset, freq=f"{self.period}min", progress=None)
         self.df_future = self.model.make_future_dataframe(
             dataset, n_historic_predictions=True, periods=future_periods
         )
+        if future_regressors:
+            fut_mask = self.df_future["ds"] > dataset["ds"].max()
+            for reg in future_regressors:
+                val = None
+                if future_values and reg in future_values:
+                    val = future_values[reg]
+                else:
+                    val = dataset[reg].iloc[-1] if reg in dataset.columns else 0.0
+                self.df_future.loc[fut_mask, reg] = val
         self.forecast = self.model.predict(self.df_future)
 
 
@@ -222,7 +254,11 @@ class Prophet:
         timeseries_org: Dict[str, float] = {}
 
         for _, row in pred.iterrows():
-            ptimestamp = row["ds"].tz_localize(timezone.utc)
+            ts = row["ds"]
+            if ts.tzinfo is None:
+                ptimestamp = ts.tz_localize(timezone.utc)
+            else:
+                ptimestamp = ts.tz_convert(timezone.utc)
             diff = ptimestamp - now
             timestamp = now + diff
             if diff.days < -days:
@@ -384,6 +420,7 @@ async def main():
                 subtract_names = [subtract_names]
 
             covars = sensor.get("covariates", []) or []
+            future_covars = sensor.get("future_covariates", []) or []
             cov_n_lags = sensor.get("cov_n_lags", 0)
 
             nw = Prophet(sensor.get("interval", 30))
@@ -422,6 +459,9 @@ async def main():
                 )
 
             cov_cols: List[str] = []
+            future_cols: List[str] = []
+            future_vals: Dict[str, float] = {}
+
             for cov in covars:
                 cov_ds, *_ = await get_history(
                     interface,
@@ -444,9 +484,40 @@ async def main():
                     on="ds",
                     how="left",
                 )
+
+            for cov in future_covars:
+                cov_ds, *_ = await get_history(
+                    interface,
+                    nw,
+                    cov,
+                    now,
+                    incrementing=False,
+                    max_increment=0,
+                    days=sensor.get("days", 7),
+                    use_db=sensor.get("database", True),
+                    reset_low=0,
+                    reset_high=0,
+                    max_age=sensor.get("max_age", 365),
+                )
+                col = sanitise_name(cov)
+                future_cols.append(col)
+                base_ds = pd.merge(
+                    base_ds,
+                    cov_ds.rename(columns={"y": col}),
+                    on="ds",
+                    how="left",
+                )
+                val = await interface.get_state(cov)
+                try:
+                    future_vals[col] = float(val)
+                except (TypeError, ValueError):
+                    future_vals[col] = 0.0
             if cov_cols:
                 base_ds.sort_values("ds", inplace=True)
                 base_ds[cov_cols] = base_ds[cov_cols].ffill().bfill()
+            if future_cols:
+                base_ds.sort_values("ds", inplace=True)
+                base_ds[future_cols] = base_ds[future_cols].ffill().bfill()
 
             await nw.train(
                 base_ds,
@@ -455,6 +526,8 @@ async def main():
                 country=sensor.get("country"),
                 regressors=cov_cols,
                 reg_n_lags=cov_n_lags,
+                future_regressors=future_cols,
+                future_values=future_vals,
             )
 
             await nw.save_prediction(
