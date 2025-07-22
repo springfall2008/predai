@@ -247,6 +247,13 @@ def _load_sensor(dflt: Dict[str, Any], d: Dict[str, Any]) -> SensorCfg:
 
 
 def load_config(path: str = DEFAULT_CONFIG_PATH) -> PredAIConfig:
+    """Load YAML configuration for PredAI.
+
+    A short info log is emitted with the path being loaded so users can
+    verify which file is in use. If the file is missing, the function
+    falls back to defaults and reports an error.
+    """
+    logger.info("Loading configuration from %s", path)
     if not os.path.exists(path):
         logger.error("Configuration file %s not found.", path)
         return PredAIConfig()
@@ -264,6 +271,8 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> PredAIConfig:
     for s in sensors_raw:
         s_clean = {k: v for k, v in s.items() if k != "roles"}  # ignore stray nested roles
         sensors.append(_load_sensor(dflt, s_clean))
+
+    logger.info("Configuration: %s roles, %s sensors", len(roles), len(sensors))
 
     cfg = PredAIConfig(
         update_every=raw.get("update_every", 30),
