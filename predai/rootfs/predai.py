@@ -13,6 +13,37 @@ import ssl
 import math
 import yaml
 
+# Fix for PyTorch 2.6 weights_only=True default
+# Add NeuralProphet classes to safe globals for checkpoint loading
+try:
+    import torch.serialization
+    from neuralprophet.configure import (
+        ConfigSeasonality,
+        Season,
+        Trend,
+        ConfigTrain,
+        ConfigAR,
+        ConfigLagged,
+        ConfigEvents,
+        ConfigCountryHolidays,
+    )
+    
+    # Add all NeuralProphet configuration classes to safe globals
+    torch.serialization.add_safe_globals([
+        ConfigSeasonality,
+        Season,
+        Trend,
+        ConfigTrain,
+        ConfigAR,
+        ConfigLagged,
+        ConfigEvents,
+        ConfigCountryHolidays,
+    ])
+except (ImportError, AttributeError):
+    # If torch.serialization or classes are not available, continue without the fix
+    # This allows backward compatibility with older PyTorch versions
+    pass
+
 TIMEOUT = 240
 TIME_FORMAT_HA = "%Y-%m-%dT%H:%M:%S%z"
 TIME_FORMAT_HA_DOT = "%Y-%m-%dT%H:%M:%S.%f%z"
