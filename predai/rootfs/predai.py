@@ -53,6 +53,19 @@ try:
         kwargs['weights_only'] = False
         return _original_torch_load(*args, **kwargs)
     torch.load = _patched_torch_load
+    
+    # Also patch torch.serialization._load if it exists (for older PyTorch)
+    if hasattr(torch.serialization, '_load'):
+        _original_serialization_load = torch.serialization._load
+        def _patched_serialization_load(*args, **kwargs):
+            if 'weights_only' not in kwargs:
+                kwargs['weights_only'] = False
+            return _original_serialization_load(*args, **kwargs)
+        torch.serialization._load = _patched_serialization_load
+        
+    # Set environment variable as additional fallback
+    os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+    
 except (ImportError, AttributeError):
     # If torch.serialization or classes are not available, continue without the fix
     # This allows backward compatibility with older PyTorch versions
