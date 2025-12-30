@@ -13,9 +13,10 @@ import ssl
 import math
 import yaml
 
-# Fix for PyTorch 2.6 weights_only=True default
+# Fix for PyTorch 2.6+ weights_only=True default
 # Add NeuralProphet classes to safe globals for checkpoint loading
 try:
+    import torch
     import torch.serialization
     from neuralprophet.configure import (
         ConfigSeasonality,
@@ -27,6 +28,7 @@ try:
         ConfigEvents,
         ConfigCountryHolidays,
     )
+    from collections import OrderedDict
     
     # Add all NeuralProphet configuration classes to safe globals
     torch.serialization.add_safe_globals([
@@ -38,7 +40,17 @@ try:
         ConfigLagged,
         ConfigEvents,
         ConfigCountryHolidays,
+        OrderedDict,
     ])
+    
+    # Monkey-patch torch.load to use weights_only=False by default
+    # This is needed for PyTorch 2.6+ compatibility with PyTorch Lightning
+    _original_torch_load = torch.load
+    def _patched_torch_load(*args, **kwargs):
+        if 'weights_only' not in kwargs:
+            kwargs['weights_only'] = False
+        return _original_torch_load(*args, **kwargs)
+    torch.load = _patched_torch_load
 except (ImportError, AttributeError):
     # If torch.serialization or classes are not available, continue without the fix
     # This allows backward compatibility with older PyTorch versions
@@ -483,4 +495,5 @@ async def main():
                 break
             await asyncio.sleep(60)
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

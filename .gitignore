@@ -19,6 +19,10 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.lr_find*
+.pytest_cache/
+events.out.*
+lightning_logs/*
 
 # Virtual environments
 venv/
