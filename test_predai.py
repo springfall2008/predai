@@ -11,8 +11,9 @@ try:
     import torch
     _original_torch_load = torch.load
     def _patched_torch_load(*args, **kwargs):
-        if 'weights_only' not in kwargs:
-            kwargs['weights_only'] = False
+        # Force weights_only=False for all checkpoint loads
+        # This is safe because we're loading locally-created NeuralProphet checkpoints
+        kwargs['weights_only'] = False
         return _original_torch_load(*args, **kwargs)
     torch.load = _patched_torch_load
 except (ImportError, AttributeError):
