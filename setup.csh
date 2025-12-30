@@ -1,8 +1,14 @@
 # Setup script for PredAI test environment
 # Creates a virtual environment and installs dependencies
+# Usage: ./setup.csh [python_version]
+# Example: ./setup.csh python3.13
 
+# Use provided Python version or default to python3.10
+PYTHON_VERSION=${1:-python3.10}
+
+echo "Using Python: $PYTHON_VERSION"
 echo "Creating Python virtual environment..."
-python3 -m venv venv
+$PYTHON_VERSION -m venv venv
 
 echo "Activating virtual environment..."
 source venv/bin/activate

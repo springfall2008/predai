@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from neuralprophet import NeuralProphet, set_log_level
 import os
 import aiohttp
 import requests
@@ -13,63 +12,8 @@ import ssl
 import math
 import yaml
 
-# Fix for PyTorch 2.6+ weights_only=True default
-# Add NeuralProphet classes to safe globals for checkpoint loading
-try:
-    import torch
-    import torch.serialization
-    from neuralprophet.configure import (
-        ConfigSeasonality,
-        Season,
-        Trend,
-        ConfigTrain,
-        ConfigAR,
-        ConfigLagged,
-        ConfigEvents,
-        ConfigCountryHolidays,
-    )
-    from collections import OrderedDict
-    
-    # Add all NeuralProphet configuration classes to safe globals
-    torch.serialization.add_safe_globals([
-        ConfigSeasonality,
-        Season,
-        Trend,
-        ConfigTrain,
-        ConfigAR,
-        ConfigLagged,
-        ConfigEvents,
-        ConfigCountryHolidays,
-        OrderedDict,
-    ])
-    
-    # Monkey-patch torch.load to force weights_only=False
-    # This is needed for PyTorch 2.6+ compatibility with PyTorch Lightning
-    # PyTorch Lightning explicitly passes weights_only=True, so we need to override it
-    _original_torch_load = torch.load
-    def _patched_torch_load(*args, **kwargs):
-        # Force weights_only=False for all checkpoint loads
-        # This is safe because we're loading locally-created NeuralProphet checkpoints
-        kwargs['weights_only'] = False
-        return _original_torch_load(*args, **kwargs)
-    torch.load = _patched_torch_load
-    
-    # Also patch torch.serialization._load if it exists (for older PyTorch)
-    if hasattr(torch.serialization, '_load'):
-        _original_serialization_load = torch.serialization._load
-        def _patched_serialization_load(*args, **kwargs):
-            if 'weights_only' not in kwargs:
-                kwargs['weights_only'] = False
-            return _original_serialization_load(*args, **kwargs)
-        torch.serialization._load = _patched_serialization_load
-        
-    # Set environment variable as additional fallback
-    os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
-    
-except (ImportError, AttributeError):
-    # If torch.serialization or classes are not available, continue without the fix
-    # This allows backward compatibility with older PyTorch versions
-    pass
+# Now import NeuralProphet after torch is patched
+from neuralprophet import NeuralProphet, set_log_level
 
 TIMEOUT = 240
 TIME_FORMAT_HA = "%Y-%m-%dT%H:%M:%S%z"
@@ -437,6 +381,8 @@ async def main():
     """
     Main function for the prediction AI.
     """
+
+    print("*********    Starting PredAI  *********")
     config = yaml.safe_load(open("/config/predai.yaml"))
     interface = HAInterface(config.get("ha_url", None), config.get("ha_key", None))
     while True:
