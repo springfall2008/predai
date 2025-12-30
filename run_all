@@ -1,0 +1,33 @@
+#!/bin/bash
+# Run all PredAI unit tests
+
+set -e
+
+# Check if virtual environment exists
+if [ ! -d "venv" ]; then
+    echo "Error: Virtual environment not found!"
+    echo "Please run ./setup.csh first to create the environment"
+    exit 1
+fi
+
+# Activate virtual environment
+echo "Activating virtual environment..."
+source venv/bin/activate
+
+# Run the tests
+echo ""
+echo "Running PredAI unit tests..."
+echo "================================"
+python -m unittest test_predai.py -v
+
+# Check test result
+if [ $? -eq 0 ]; then
+    echo ""
+    echo "================================"
+    echo "✅ All tests passed successfully!"
+else
+    echo ""
+    echo "================================"
+    echo "❌ Some tests failed"
+    exit 1
+fi
