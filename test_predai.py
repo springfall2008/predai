@@ -22,7 +22,7 @@ except (ImportError, AttributeError):
 # Add the rootfs directory to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'predai', 'rootfs'))
 
-from predai import HAInterface, Prophet, timestr_to_datetime
+from predai import HAInterface, Prophet, timestr_to_datetime, convert_units, get_history
 
 
 class TestPredAI(unittest.IsolatedAsyncioTestCase):
@@ -253,6 +253,158 @@ class TestPredAI(unittest.IsolatedAsyncioTestCase):
         
         print(f"Incrementing sensor test: {len(dataset)} rows processed")
         print(f"Value range: {dataset['y'].min():.2f} to {dataset['y'].max():.2f}")
+
+    async def test_unit_conversion(self):
+        """Test unit conversion functionality."""
+        # Create test dataset with known values in list format (as returned by HA API)
+        base_time = datetime.now(timezone.utc)
+        dataset = [
+            {'state': str(float(i + 1)), 'last_updated': (base_time + timedelta(hours=i)).isoformat()}
+            for i in range(5)
+        ]
+        
+        # Test kWh to Wh conversion (multiply by 1000)
+        result = await convert_units([item.copy() for item in dataset], "kWh", "Wh")
+        expected_values = [1000.0, 2000.0, 3000.0, 4000.0, 5000.0]
+        for i, expected in enumerate(expected_values):
+            self.assertAlmostEqual(float(result[i]['state']), expected, places=2)
+        
+        # Test Wh to kWh conversion (multiply by 0.001)
+        result = await convert_units([item.copy() for item in dataset], "Wh", "kWh")
+        expected_values = [0.001, 0.002, 0.003, 0.004, 0.005]
+        for i, expected in enumerate(expected_values):
+            self.assertAlmostEqual(float(result[i]['state']), expected, places=6)
+        
+        # Test W to kW conversion (multiply by 0.001)
+        result = await convert_units([item.copy() for item in dataset], "W", "kW")
+        expected_values = [0.001, 0.002, 0.003, 0.004, 0.005]
+        for i, expected in enumerate(expected_values):
+            self.assertAlmostEqual(float(result[i]['state']), expected, places=6)
+        
+        # Test kW to W conversion (multiply by 1000)
+        result = await convert_units([item.copy() for item in dataset], "kW", "W")
+        expected_values = [1000.0, 2000.0, 3000.0, 4000.0, 5000.0]
+        for i, expected in enumerate(expected_values):
+            self.assertAlmostEqual(float(result[i]['state']), expected, places=2)
+        
+        # Test unsupported conversion (should return unchanged)
+        result = await convert_units([item.copy() for item in dataset], "°C", "°F")
+        for i in range(len(dataset)):
+            self.assertAlmostEqual(float(result[i]['state']), float(dataset[i]['state']), places=6)
+        
+        print("Unit conversion tests passed: kWh↔Wh, W↔kW, unsupported units")
+
+    async def test_get_history_with_unit_conversion(self):
+        """Test get_history function with unit conversion from W to kW."""
+        # Create mock HAInterface
+        mock_ha = AsyncMock(spec=HAInterface)
+        
+        # Generate test data in Watts in the format expected by process_dataset
+        base_time = datetime.now(timezone.utc)
+        test_data = [
+            {
+                'state': str(1000.0 + i*100),  # Values from 1000W to 3300W
+                'last_updated': (base_time + timedelta(hours=i)).isoformat()
+            }
+            for i in range(24)
+        ]
+        
+        # Mock get_history to return data in Watts
+        mock_ha.get_history = AsyncMock(return_value=(
+            test_data,
+            base_time,
+            base_time + timedelta(hours=23)
+        ))
+        
+        # Mock get_state to return "W" as the unit
+        mock_ha.get_state = AsyncMock(return_value="W")
+        
+        # Create Prophet instance (which acts as the "nw" wrapper)
+        prophet = Prophet(period=60)
+        
+        # Call get_history with required_units="kW" to trigger conversion
+        result_dataset, start, end = await get_history(
+            interface=mock_ha,
+            nw=prophet,
+            sensor_name="sensor.power_test",
+            now=base_time,
+            incrementing=False,
+            max_increment=None,
+            days=1,
+            use_db=False,
+            reset_low=None,
+            reset_high=None,
+            max_age=None,
+            required_units="kW"
+        )
+        
+        # Verify unit conversion occurred (W to kW, divide by 1000)
+        self.assertIsInstance(result_dataset, pd.DataFrame)
+        self.assertEqual(len(result_dataset), 24)
+        
+        # Check that values were converted correctly (1000W = 1kW, etc.)
+        self.assertAlmostEqual(result_dataset.iloc[0]['y'], 1.0, places=2)
+        self.assertAlmostEqual(result_dataset.iloc[5]['y'], 1.5, places=2)
+        self.assertAlmostEqual(result_dataset.iloc[23]['y'], 3.3, places=2)
+        
+        # Verify get_state was called to check units
+        mock_ha.get_state.assert_called_once_with("sensor.power_test", attribute="unit_of_measurement")
+        
+        print("get_history with unit conversion test passed: W → kW")
+        
+    async def test_get_history_no_conversion_needed(self):
+        """Test get_history when units already match."""
+        # Create mock HAInterface
+        mock_ha = AsyncMock(spec=HAInterface)
+        
+        # Generate test data in kW in the format expected by process_dataset
+        base_time = datetime.now(timezone.utc)
+        test_data = [
+            {
+                'state': str(1.0 + i*0.1),
+                'last_updated': (base_time + timedelta(hours=i)).isoformat()
+            }
+            for i in range(10)
+        ]
+        
+        # Mock get_history to return data in kW
+        mock_ha.get_history = AsyncMock(return_value=(
+            test_data,
+            base_time,
+            base_time + timedelta(hours=9)
+        ))
+        
+        # Mock get_state to return "kW" as the unit (same as required)
+        mock_ha.get_state = AsyncMock(return_value="kW")
+        
+        # Create Prophet instance
+        prophet = Prophet(period=60)
+        
+        # Call get_history with required_units="kW" (no conversion needed)
+        result_dataset, start, end = await get_history(
+            interface=mock_ha,
+            nw=prophet,
+            sensor_name="sensor.power_test_kw",
+            now=base_time,
+            incrementing=False,
+            max_increment=None,
+            days=1,
+            use_db=False,
+            reset_low=None,
+            reset_high=None,
+            max_age=None,
+            required_units="kW"
+        )
+        
+        # Verify no conversion occurred (values should be unchanged)
+        self.assertIsInstance(result_dataset, pd.DataFrame)
+        self.assertEqual(len(result_dataset), 10)
+        
+        # Values should remain the same
+        self.assertAlmostEqual(result_dataset.iloc[0]['y'], 1.0, places=2)
+        self.assertAlmostEqual(result_dataset.iloc[5]['y'], 1.5, places=2)
+        
+        print("get_history without conversion test passed: units match")
 
 
 if __name__ == '__main__':
