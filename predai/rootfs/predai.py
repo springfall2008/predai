@@ -360,11 +360,48 @@ async def print_dataset(name, dataset):
         if count > 24:
             break
 
-async def get_history(interface, nw, sensor_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high, max_age):
+async def convert_units(dataset, from_units, to_units):
+    """
+    Convert units in the dataset from from_units to to_units.
+    Currently supports conversion between kWh and Wh.
+    Handles list format from HA API.
+    """
+    print("Converting units from {} to {}".format(from_units, to_units))
+    factor = 1.0
+    if from_units == "kWh" and to_units == "Wh":
+        factor = 1000.0
+    elif from_units == "W" and to_units == "kW":
+        factor = 0.001
+    elif from_units == "kW" and to_units == "W":
+        factor = 1000.0
+    elif from_units == "Wh" and to_units == "kWh":
+        factor = 0.001
+    else:
+        print("Warn: Unsupported unit conversion from {} to {}".format(from_units, to_units))
+        return dataset
+
+    converted = []
+    for item in dataset:
+        converted_item = item.copy()
+        try:
+            converted_item["state"] = str(float(item["state"]) * factor)
+        except (ValueError, KeyError):
+            # Keep original if conversion fails
+            pass
+        converted.append(converted_item)
+    return converted
+    
+    
+async def get_history(interface, nw, sensor_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high, max_age, required_units=None):
     """
     Get history from HA, combine it with the database if use_db is True.
     """
     dataset, start, end = await interface.get_history(sensor_name, now, days=days)
+    if required_units:
+        units = await interface.get_state(sensor_name, attribute="unit_of_measurement")
+        if (required_units is not None) and (units is not None) and (units != required_units):
+            # Perform unit conversion if needed
+            dataset = await convert_units(dataset, units, required_units)
     dataset, last_dataset_value = await nw.process_dataset(sensor_name, dataset, start, end, incrementing=incrementing, max_increment=max_increment, reset_low=reset_low, reset_high=reset_high)
 
     if use_db:
@@ -382,7 +419,7 @@ async def main():
     Main function for the prediction AI.
     """
 
-    print("*********    Starting PredAI  *********")
+    print("*********  Starting PredAI  *********")
     config = yaml.safe_load(open("/config/predai.yaml"))
     interface = HAInterface(config.get("ha_url", None), config.get("ha_key", None))
     while True:
@@ -423,7 +460,7 @@ async def main():
                 print("Update at time {} Processing sensor {} incrementing {} max_increment {} reset_daily {} interval {} days {} export_days {} subtract {}".format(now, sensor_name, incrementing, max_increment, reset_daily, interval, days, export_days, subtract_names))
 
                 # Get the data
-                dataset, start, end = await get_history(interface, nw, sensor_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high, max_age)
+                dataset, start, end = await get_history(interface, nw, sensor_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high, max_age, required_units=units)
 
                 # Get the subtract data
                 subtract_data_list = []
@@ -431,7 +468,7 @@ async def main():
                     if isinstance(subtract_names, str):
                         subtract_names = [subtract_names]
                     for subtract_name in subtract_names:
-                        subtract_data, sub_start, sub_end = await get_history(interface, nw, subtract_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high, max_age)
+                        subtract_data, sub_start, sub_end = await get_history(interface, nw, subtract_name, now, incrementing, max_increment, days, use_db, reset_low, reset_high, max_age, required_units=units)
                         subtract_data_list.append(subtract_data)
 
                 # Subtract the data
